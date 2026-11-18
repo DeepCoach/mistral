@@ -19,54 +19,105 @@ const promptCacheKeyField = "prompt_cache_key"
 // balancer picks another backend.
 const promptCacheAffinityHeader = "x-affinity"
 
-// promptCacheSessionKeys lists the host-provided session identities in
-// authority order. They are only a last resort: the host reconciles explicit
-// client signals, the execution session, and a content-derived identity into
-// these fields, but a routed request's canonical_session_id is the LCP affinity
-// identity, which the host documents as routing-only and which changes when the
-// matcher rebinds a conversation (compaction, forks). The content root below is
-// stable across those rebinds, so it is preferred.
+// promptCacheRootKeys lists the host-provided session identities in authority
+// order for the cache routing identity. The root comes first because that is
+// exactly what the official Vibe client pins: a fork routes to its family's
+// root pod while telemetry keeps the child's own session id. The remaining
+// fields are the fallback for a request the host did not tag with a root.
+var promptCacheRootKeys = []string{
+	"root_session_id",
+	"canonical_root_session_id",
+	"parent_root_session_id",
+}
+
+// promptCacheSessionKeys lists the host-provided session identities that are
+// only a last resort for the content-root key: a routed request's
+// canonical_session_id is the LCP affinity identity, which the host documents
+// as routing-only and which changes when the matcher rebinds a conversation
+// (compaction, forks).
 var promptCacheSessionKeys = []string{
 	"canonical_session_id",
 	"execution_session_id",
 	"derived_session_id",
 }
 
-// applyPromptCacheKey makes sure the upstream body carries a stable
-// prompt_cache_key and returns the key so the caller can mirror it in the
-// x-affinity header. An explicit client key wins. Otherwise the key is derived
-// from the conversation's content root: the leading instructions plus the first
-// user message. That root is the same for every turn of a conversation and also
-// for the compaction request that replays the full history, so those requests
-// keep hitting the pod that already holds the prefix. Host session metadata is
-// only used when the request has no messages at all.
-func applyPromptCacheKey(payload, original []byte, metadata map[string]any, headers map[string][]string, model string) ([]byte, string, string) {
+// cacheRoutings carries the two independent cache signals a request needs. They
+// are deliberately separate, matching the official Vibe client:
+//
+//   - Affinity is the request header that actually decides which inference pod
+//     serves the request. Its value is the conversation family's root session
+//     id, forwarded verbatim when the client already sends one.
+//   - Key is the body field that only raises the odds of reusing a prefix. It
+//     is derived from the conversation content so compaction replays and turns
+//     of one conversation keep the same value.
+//
+// Conflating them, as this plugin used to, made the routing identity follow the
+// prompt content: a fork or a client that only sent a cache key lost the pod
+// affinity the official client would have kept.
+type cacheRoutings struct {
+	Key            string
+	KeySource      string
+	Affinity       string
+	AffinitySource string
+}
+
+// applyPromptCacheRouting adds prompt_cache_key to the upstream body and
+// resolves the x-affinity header value. An explicit client key wins over a
+// derived one. The affinity keeps the client's own value when it sends the
+// header; otherwise it is the session root identity from the host metadata, and
+// only failing that the same value as the cache key so a routed request still
+// has a stable routing identity.
+func applyPromptCacheRouting(payload, original []byte, metadata map[string]any, headers map[string][]string, model string) ([]byte, cacheRoutings) {
+	var routing cacheRoutings
 	var doc map[string]any
 	if err := decodeJSON(payload, &doc); err != nil {
-		return payload, "", ""
+		return payload, routing
 	}
 	if existing, _ := doc[promptCacheKeyField].(string); strings.TrimSpace(existing) != "" {
-		return payload, strings.TrimSpace(existing), "client"
-	}
-	key, source := "", ""
-	if clientKey := clientPromptCacheKey(original); clientKey != "" {
-		key, source = clientKey, "client"
-	} else if affinity := headerValue(headers, promptCacheAffinityHeader); affinity != "" {
-		// A client that already carries the official affinity identity (Vibe
-		// CLI and clients that copied it) is the most stable signal available.
-		key, source = hashPromptCacheKey(model, "affinity", affinity), "affinity"
+		routing.Key, routing.KeySource = strings.TrimSpace(existing), "client"
+	} else if clientKey := clientPromptCacheKey(original); clientKey != "" {
+		routing.Key, routing.KeySource = clientKey, "client"
 	} else {
-		key, source = derivePromptCacheKey(doc, metadata, model)
+		routing.Key, routing.KeySource = derivePromptCacheKey(doc, metadata, model)
 	}
-	if key == "" {
-		return payload, "", ""
+	routing.Affinity, routing.AffinitySource = resolveCacheAffinity(metadata, headers, routing)
+	if routing.Key == "" {
+		return payload, routing
 	}
-	doc[promptCacheKeyField] = key
+	if existing, _ := doc[promptCacheKeyField].(string); strings.TrimSpace(existing) == routing.Key {
+		return payload, routing
+	}
+	doc[promptCacheKeyField] = routing.Key
 	out, err := encodeJSON(doc)
 	if err != nil {
-		return payload, "", ""
+		return payload, routing
 	}
-	return out, key, source
+	return out, routing
+}
+
+// resolveCacheAffinity picks the value for the x-affinity header. A client that
+// already sends the header speaks the official protocol, so its value is
+// forwarded unchanged rather than rehashed: the Vibe CLI sends the root session
+// id, which is the one identity that survives forks and compaction.
+func resolveCacheAffinity(metadata map[string]any, headers map[string][]string, routing cacheRoutings) (value, source string) {
+	if client := headerValue(headers, promptCacheAffinityHeader); client != "" {
+		return affinityHeaderValue(client), "client"
+	}
+	for _, name := range promptCacheRootKeys {
+		raw, ok := metadata[name].(string)
+		if !ok || strings.TrimSpace(raw) == "" {
+			continue
+		}
+		if resolved := affinityHeaderValue(raw); resolved != "" {
+			return resolved, "session"
+		}
+	}
+	// No root identity to route on: fall back to the content root so every turn
+	// of the conversation still lands on the pod that already holds its prefix.
+	if routing.Key != "" {
+		return affinityHeaderValue(routing.Key), routing.KeySource
+	}
+	return "", ""
 }
 
 // clientPromptCacheKey reads an explicit key from the raw client body. The

@@ -290,15 +290,17 @@ func execute(request []byte, stream bool) []byte {
 	if reasoning != "" {
 		payload = forceEffort(payload, reasoning)
 	}
-	payload, cacheKey, cacheKeySource := applyPromptCacheKey(payload, req.OriginalRequest, req.Metadata, req.Headers, upstream)
+	payload, cache := applyPromptCacheRouting(payload, req.OriginalRequest, req.Metadata, req.Headers, upstream)
 	started := time.Now()
 	entry := requestLog{
-		Model:          req.Model,
-		Upstream:       upstream,
-		Stream:         stream,
-		CacheKeySource: cacheKeySource,
-		CacheKey:       shortHash(cacheKey),
-		PrefixHash:     payloadPrefixHash(payload),
+		Model:               req.Model,
+		Upstream:            upstream,
+		Stream:              stream,
+		CacheKeySource:      cache.KeySource,
+		CacheKey:            shortHash(cache.Key),
+		CacheAffinity:       shortHash(cache.Affinity),
+		CacheAffinitySource: cache.AffinitySource,
+		PrefixHash:          payloadPrefixHash(payload),
 	}
 	upstreamURL := strings.TrimRight(current.BaseURL, "/") + chatPath
 	var lastStatus int
@@ -314,8 +316,8 @@ func execute(request []byte, stream bool) []byte {
 		if stream {
 			headers["Accept"] = []string{"text/event-stream"}
 		}
-		if affinity := affinityHeaderValue(cacheKey); affinity != "" {
-			headers[promptCacheAffinityHeader] = []string{affinity}
+		if cache.Affinity != "" {
+			headers[promptCacheAffinityHeader] = []string{cache.Affinity}
 		}
 		for attempt := 0; attempt < maxUpstreamAttempts; attempt++ {
 			if attempt > 0 {

@@ -13,25 +13,27 @@ import (
 const logPath = "/CLIProxyAPI/plugin-data/mistral/requests.jsonl"
 
 type requestLog struct {
-	Time             string  `json:"time"`
-	Model            string  `json:"model"`
-	Upstream         string  `json:"upstream"`
-	Credential       string  `json:"credential"`
-	Status           int     `json:"status"`
-	TTFBMs           int64   `json:"ttfb_ms"`
-	DurationMs       int64   `json:"duration_ms"`
-	Stream           bool    `json:"stream"`
-	Attempts         int     `json:"attempts,omitempty"`
-	PromptTokens     int64   `json:"prompt_tokens,omitempty"`
-	CompletionTokens int64   `json:"completion_tokens,omitempty"`
-	CachedTokens     int64   `json:"cached_tokens,omitempty"`
-	TokensPerSecond  float64 `json:"tokens_per_second,omitempty"`
-	CacheHitRate     float64 `json:"cache_hit_rate,omitempty"`
-	CacheKeySource   string  `json:"cache_key_source,omitempty"`
-	CacheKey         string  `json:"cache_key,omitempty"`
-	PrefixHash       string  `json:"prefix_hash,omitempty"`
-	Probe            bool    `json:"probe,omitempty"`
-	Error            string  `json:"error,omitempty"`
+	Time                string  `json:"time"`
+	Model               string  `json:"model"`
+	Upstream            string  `json:"upstream"`
+	Credential          string  `json:"credential"`
+	Status              int     `json:"status"`
+	TTFBMs              int64   `json:"ttfb_ms"`
+	DurationMs          int64   `json:"duration_ms"`
+	Stream              bool    `json:"stream"`
+	Attempts            int     `json:"attempts,omitempty"`
+	PromptTokens        int64   `json:"prompt_tokens,omitempty"`
+	CompletionTokens    int64   `json:"completion_tokens,omitempty"`
+	CachedTokens        int64   `json:"cached_tokens,omitempty"`
+	TokensPerSecond     float64 `json:"tokens_per_second,omitempty"`
+	CacheHitRate        float64 `json:"cache_hit_rate,omitempty"`
+	CacheKeySource      string  `json:"cache_key_source,omitempty"`
+	CacheKey            string  `json:"cache_key,omitempty"`
+	CacheAffinitySource string  `json:"cache_affinity_source,omitempty"`
+	CacheAffinity       string  `json:"cache_affinity,omitempty"`
+	PrefixHash          string  `json:"prefix_hash,omitempty"`
+	Probe               bool    `json:"probe,omitempty"`
+	Error               string  `json:"error,omitempty"`
 }
 
 func (entry *requestLog) applyUsage(usage usageInfo, durationMs int64) {
