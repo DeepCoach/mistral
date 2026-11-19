@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -62,6 +63,12 @@ func roundRate(value float64) float64 {
 	return float64(int64(value*10000+0.5)) / 10000
 }
 
+// trimBytesPerLineHint is how much larger than the retention limit the log has
+// to get before a rewrite is worth its whole-file read and write. Request lines
+// are small; the margin only has to be large enough that the rewrite happens
+// rarely, not exact.
+const trimBytesPerLineHint = 1024
+
 var logMu sync.Mutex
 
 func appendRequestLog(entry requestLog) {
@@ -83,7 +90,29 @@ func appendRequestLog(entry requestLog) {
 	}
 	_, _ = f.Write(append(raw, '\n'))
 	_ = f.Close()
-	trimRequestLogs(loadSettings().LogRetention)
+	// Trimming rewrites the whole file, so it only runs once the log has grown
+	// past the limit with room to spare. Doing it on every append made the cost
+	// of each request grow with the size of the log, and every append waited
+	// behind the rewrite under the same lock.
+	trimRequestLogsSoft(loadSettings().LogRetention)
+}
+
+// trimRequestLogsSoft rewrites the log only once it holds a comfortable margin
+// over the retention limit, so a full rewrite is amortised over many appends.
+func trimRequestLogsSoft(keep int) {
+	if keep <= 0 {
+		keep = 200
+	}
+	info, err := os.Stat(logPath)
+	if err != nil || info.Size() == 0 {
+		return
+	}
+	// A request line is far smaller than this; if the file is below the
+	// threshold it cannot hold noticeably more than keep lines.
+	if info.Size() < int64(keep)*trimBytesPerLineHint {
+		return
+	}
+	trimRequestLogs(keep)
 }
 
 func trimRequestLogs(keep int) {
@@ -195,11 +224,17 @@ func splitLines(text string) []string {
 }
 
 func joinLines(lines []string) string {
-	out := ""
+	var builder strings.Builder
+	size := 0
 	for _, line := range lines {
-		out += line + "\n"
+		size += len(line) + 1
 	}
-	return out
+	builder.Grow(size)
+	for _, line := range lines {
+		builder.WriteString(line)
+		builder.WriteByte('\n')
+	}
+	return builder.String()
 }
 
 // shortHash fingerprints a cache key for the console. The raw key can be a

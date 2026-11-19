@@ -153,14 +153,52 @@ func TestRequestDropsFieldsMistralRejects(t *testing.T) {
 func TestEffortFollowsModelLadder(t *testing.T) {
 	cases := []struct{ model, in, want string }{
 		{"zai-glm-5-3", "xhigh", "max"},
-		{"zai-glm-5-3", "none", "max"},
 		{"zai-glm-5-3", "low", "low"},
 		{"mistral-vibe-cli-latest", "max", "high"},
-		{"mistral-vibe-cli-latest", "low", "high"},
 		{"mistral-vibe-cli-latest", "high", "high"},
-		{"deepseek-v4-1-flash-1017", "medium", "high"},
+		{"deepseek-v4-1-flash-1017", "medium", "medium"},
 		{"deepseek-v4-1-flash-1017", "minimal", "low"},
 		{"deepseek-v4-1-flash-1017", "xhigh", "xhigh"},
+	}
+	for _, tc := range cases {
+		if got := normalizeEffort(tc.model, tc.in); got != tc.want {
+			t.Fatalf("normalizeEffort(%q, %q) = %q, want %q", tc.model, tc.in, got, tc.want)
+		}
+	}
+}
+
+// Clients turn thinking off with "off" as often as with "none". It used to have
+// no alias, so it fell through to the strongest level and the model thought
+// exactly when the client asked it not to.
+func TestEffortOffTurnsThinkingOff(t *testing.T) {
+	for _, model := range []string{"mistral-vibe-cli-latest", "zai-glm-5-3", "mistral-large-latest"} {
+		if got := normalizeEffort(model, "off"); got != "none" && got != "low" {
+			t.Fatalf("normalizeEffort(%q, off) = %q, want a level that does not think", model, got)
+		}
+	}
+	if got := normalizeEffort("mistral-vibe-cli-latest", "off"); got != "none" {
+		t.Fatalf("off = %q, want none", got)
+	}
+}
+
+// A typo or a value this plugin does not know must not silently buy the most
+// expensive level. Leaving the field out keeps the model's own default.
+func TestEffortUnknownValueKeepsModelDefault(t *testing.T) {
+	for _, in := range []string{"bogus", "ultra", "thinking-harder"} {
+		if got := normalizeEffort("mistral-large-latest", in); got != "" {
+			t.Fatalf("normalizeEffort(%q) = %q, want empty so the field is dropped", in, got)
+		}
+	}
+}
+
+// An effort the model cannot express goes to the nearest level it has, and a
+// tie resolves to the cheaper side rather than the strongest.
+func TestEffortNearestLevelMatchesUpstream(t *testing.T) {
+	cases := []struct{ model, in, want string }{
+		{"zai-glm-5-3", "none", "low"},
+		{"zai-glm-5-3", "xhigh", "max"},
+		{"mistral-vibe-cli-latest", "low", "high"},
+		{"mistral-vibe-cli-latest", "medium", "high"},
 	}
 	for _, tc := range cases {
 		if got := normalizeEffort(tc.model, tc.in); got != tc.want {

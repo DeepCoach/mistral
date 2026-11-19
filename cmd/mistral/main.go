@@ -194,8 +194,9 @@ func registrationJSON() []byte {
 				{"Name": "api-key", "Type": "string", "Description": "Mistral API key."},
 				{"Name": "models", "Type": "string", "Description": "Client model names, optionally client=upstream."},
 				{"Name": "log-retention", "Type": "number", "Description": "Number of request log entries to keep."},
-				{"Name": "stream-idle-seconds", "Type": "number", "Description": "Cancel a stream after this many idle seconds. 0 disables it."},
+				{"Name": "stream-idle-seconds", "Type": "number", "Description": "Cancel a stream after this many seconds without model output. 0 disables it. Default 300."},
 				{"Name": "failover", "Type": "bool", "Description": "Try the next credential when the upstream rejects the current one."},
+				{"Name": "ignore-proxy", "Type": "bool", "Description": "Dial Mistral directly instead of through the proxy the host configures."},
 				{"Name": "cooldown-seconds", "Type": "number", "Description": "Base cooldown after a credential failure."},
 			},
 		},
@@ -212,9 +213,17 @@ func registrationJSON() []byte {
 }
 
 func authResponse(request []byte) []byte {
-	ours := bytes.Contains(request, []byte("mistral.json")) ||
-		bytes.Contains(request, []byte(`"type":"mistral"`)) ||
-		bytes.Contains(request, []byte(`"type": "mistral"`))
+	// Match the auth document by value, not by byte pattern: the host
+	// re-serializes it, and {"type" : "mistral"} used to fall through unhandled.
+	ours := bytes.Contains(request, []byte("mistral.json"))
+	if !ours {
+		var doc struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(request, &doc); err == nil && doc.Type == pluginConfigKey {
+			ours = true
+		}
+	}
 	if !ours {
 		return mustOK(map[string]any{"Handled": false})
 	}
@@ -326,7 +335,7 @@ func execute(request []byte, stream bool) []byte {
 			attempts++
 			entry.Attempts = attempts
 			if stream {
-				status, err := streamUpstream(req.HostCallbackID, req.StreamID, upstreamURL, headers, payload, started, entry, cred.ID, current.IgnoreProxy)
+				status, err := streamUpstream(req.HostCallbackID, req.StreamID, upstreamURL, headers, payload, started, entry, current.IgnoreProxy)
 				if err == nil {
 					recordCredentialSuccess(cred.ID)
 					return mustOK(map[string]any{"headers": map[string][]string{"content-type": {"text/event-stream"}}})
@@ -385,7 +394,7 @@ func execute(request []byte, stream bool) []byte {
 	return upstreamErrorEnvelope(lastErr, status)
 }
 
-func streamUpstream(callbackID, streamID, upstreamURL string, headers map[string][]string, payload []byte, started time.Time, entry requestLog, credentialID string, direct bool) (int, error) {
+func streamUpstream(callbackID, streamID, upstreamURL string, headers map[string][]string, payload []byte, started time.Time, entry requestLog, direct bool) (int, error) {
 	idle := loadSettings().StreamIdleSeconds
 	if direct {
 		resp, errOpen := directStreamOpen(upstreamURL, headers, payload)
@@ -448,12 +457,16 @@ func streamUpstream(callbackID, streamID, upstreamURL string, headers map[string
 	// The host does not read emitted chunks until this RPC returns, and its
 	// buffer is only 16 chunks. Emitting the whole upstream body here deadlocks
 	// on any response longer than that.
-	go pumpUpstream(openedResp.StreamID, streamID, started, entry, callbackID, operationID, idle, credentialID)
+	go pumpUpstream(openedResp.StreamID, streamID, started, entry, callbackID, operationID, idle)
 	return status, nil
 }
 
-func pumpUpstream(upstreamID, streamID string, started time.Time, entry requestLog, callbackID, operationID string, idle int, credentialID string) {
-	last := time.Now().UnixNano()
+func pumpUpstream(upstreamID, streamID string, started time.Time, entry requestLog, callbackID, operationID string, idle int) {
+	// last is read by watchIdle through an atomic load, so it has to be written
+	// the same way. It used to be assigned once and never again, which turned
+	// the idle limit into a cap on the whole stream: an active generation was
+	// cancelled the moment it reached the limit.
+	var last int64 = time.Now().UnixNano()
 	stopWatch := make(chan struct{})
 	defer close(stopWatch)
 	if idle > 0 && operationID != "" {
@@ -472,10 +485,26 @@ func pumpUpstream(upstreamID, streamID string, started time.Time, entry requestL
 			entry.Error = err.Error()
 			entry.DurationMs = time.Since(started).Milliseconds()
 			appendRequestLog(entry)
-			recordCredentialFailure(credentialID, 0, err.Error())
+			// A read failure here is the host bridge or the upstream connection,
+			// not the credential: cooling the key for it took a healthy key out
+			// of rotation for minutes. Upstream statuses already record their own
+			// failures in execute.
+			failStream(streamID, err)
 			return
 		}
+		atomic.StoreInt64(&last, time.Now().UnixNano())
 		pending = append(pending, chunk...)
+		if len(pending) > maxPendingSSEBytes {
+			// The upstream is not framing SSE. Without a bound this grows until
+			// the plugin, which lives inside the proxy process, takes it down.
+			err := fmt.Errorf("upstream sent no SSE frame separator within %d bytes", maxPendingSSEBytes)
+			entry.Status = http.StatusBadGateway
+			entry.Error = err.Error()
+			entry.DurationMs = time.Since(started).Milliseconds()
+			appendRequestLog(entry)
+			failStream(streamID, err)
+			return
+		}
 		frames, rest := splitSSE(pending)
 		pending = rest
 		for _, frame := range frames {
@@ -488,6 +517,8 @@ func pumpUpstream(upstreamID, streamID string, started time.Time, entry requestL
 				entry.Error = err.Error()
 				entry.DurationMs = time.Since(started).Milliseconds()
 				appendRequestLog(entry)
+				// The client is gone or the host stream is broken; emitting the
+				// failure event would only fail again.
 				return
 			}
 		}
@@ -580,6 +611,43 @@ func emitFrame(streamID string, frame []byte) error {
 		"payload":   rewritten,
 	})
 	return err
+}
+
+// failStream tells the client the stream ended in an error. A stream that just
+// stops leaves the client waiting for a frame that never comes: OpenAI-style
+// clients only finish on [DONE] or on an explicit error, so an aborted stream
+// has to say so and then close.
+func failStream(streamID string, cause error) {
+	if streamID == "" {
+		return
+	}
+	for _, frame := range failedStreamFrames(cause) {
+		_, _ = callHost("host.stream.emit", map[string]any{
+			"stream_id": streamID,
+			"payload":   frame,
+		})
+	}
+}
+
+// failedStreamFrames builds the frames that end an interrupted stream: an error
+// event carrying the reason, then [DONE] so the client stops reading.
+func failedStreamFrames(cause error) [][]byte {
+	message := "upstream stream failed"
+	if cause != nil {
+		message = truncateText(cause.Error(), 400)
+	}
+	event, err := encodeJSON(map[string]any{
+		"error": map[string]any{
+			"message": message,
+			"type":    "upstream_error",
+			"code":    "stream_interrupted",
+		},
+	})
+	frames := make([][]byte, 0, 2)
+	if err == nil {
+		frames = append(frames, append(append([]byte("data: "), event...), []byte("\n\n")...))
+	}
+	return append(frames, []byte("data: [DONE]\n\n"))
 }
 
 func rewriteFrame(frame []byte) []byte {

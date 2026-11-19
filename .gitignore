@@ -4,3 +4,4 @@
 *.dll
 dist/
 AGENTS.md
+/mistral

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,7 +15,14 @@ import (
 // headers. Mistral's gateway only gives up on a stuck backend after 15 minutes
 // and answers 504, which is far longer than any client waits, so the plugin
 // fails fast and retries instead.
-const directHeaderTimeout = 120 * time.Second
+//
+// It is deliberately generous. Headers only arrive once the model starts
+// producing output, so this is the budget for the first token, not for a
+// round-trip: at the high effort settings a long prompt legitimately says
+// nothing for minutes. The upstream Vibe client waits 720s for the same thing.
+// A value far below that aborts healthy requests, and each abort costs the
+// whole generation.
+const directHeaderTimeout = 600 * time.Second
 
 var (
 	directTransportOnce sync.Once
@@ -92,19 +100,40 @@ func pumpDirectStream(streamID string, resp *http.Response, started time.Time, e
 		})
 		defer idleTimer.Stop()
 	}
+	resetIdle := func() {
+		if idleTimer != nil {
+			idleTimer.Reset(time.Duration(idle) * time.Second)
+		}
+	}
 	// The plugin RPC caller only starts reading host stream emissions after
 	// streamUpstream returns, so give the caller a moment before the first emit.
 	time.Sleep(50 * time.Millisecond)
 	reader := bufio.NewReaderSize(resp.Body, 32*1024)
 	buf := make([]byte, 32*1024)
 	var pending []byte
+	produced := false
 	for {
 		n, err := reader.Read(buf)
 		if n > 0 {
-			if idleTimer != nil {
-				idleTimer.Reset(time.Duration(idle) * time.Second)
+			// Only model output resets the idle limit. Mistral generates a tool
+			// call whole and sends it at the end, so the bytes before it are
+			// keep-alive comments that say nothing about whether the stream is
+			// alive; counting them let a stalled stream hide behind heartbeats.
+			// Until output starts, the wait is governed by the response-header
+			// timeout, which is the right limit for a long first token.
+			if produced {
+				resetIdle()
 			}
 			pending = append(pending, buf[:n]...)
+			if len(pending) > maxPendingSSEBytes {
+				errNoFrame := fmt.Errorf("upstream sent no SSE frame separator within %d bytes", maxPendingSSEBytes)
+				entry.Status = http.StatusBadGateway
+				entry.Error = errNoFrame.Error()
+				entry.DurationMs = time.Since(started).Milliseconds()
+				appendRequestLog(entry)
+				failStream(streamID, errNoFrame)
+				return
+			}
 			frames, rest := splitSSE(pending)
 			pending = rest
 			for _, frame := range frames {
@@ -112,11 +141,17 @@ func pumpDirectStream(streamID string, resp *http.Response, started time.Time, e
 					entry.TTFBMs = time.Since(started).Milliseconds()
 				}
 				captureFrameUsage(&entry, frame)
+				if !produced && frameCarriesOutput(frame) {
+					produced = true
+					resetIdle()
+				}
 				if emitErr := emitFrame(streamID, frame); emitErr != nil {
 					entry.Status = http.StatusBadGateway
 					entry.Error = emitErr.Error()
 					entry.DurationMs = time.Since(started).Milliseconds()
 					appendRequestLog(entry)
+					// The client is gone or the host stream is broken; emitting
+					// the failure event would only fail again.
 					return
 				}
 			}
@@ -141,8 +176,52 @@ func pumpDirectStream(streamID string, resp *http.Response, started time.Time, e
 		entry.Status = http.StatusBadGateway
 		entry.Error = err.Error()
 		appendRequestLog(entry)
+		// A connection that dropped mid-stream is the upstream's failure, not
+		// the credential's, so it does not cool the key; but the client still
+		// has to be told the stream is over instead of waiting forever.
+		failStream(streamID, err)
 		return
 	}
+}
+
+// frameCarriesOutput reports whether an SSE frame holds model output rather
+// than a preamble. The first frames usually carry only the assistant role and
+// empty content, and Mistral's heartbeats are comment lines; neither means the
+// model has started answering. This mirrors the upstream Vibe client's
+// _carries_model_output check.
+func frameCarriesOutput(frame []byte) bool {
+	data := bytes.TrimSpace(bytes.TrimPrefix(bytes.TrimSpace(frame), []byte("data:")))
+	if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
+		return false
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return false
+	}
+	choices, _ := doc["choices"].([]any)
+	for _, item := range choices {
+		choice, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		delta, _ := choice["delta"].(map[string]any)
+		if delta == nil {
+			delta, _ = choice["message"].(map[string]any)
+		}
+		if delta == nil {
+			continue
+		}
+		if text, _ := delta["content"].(string); text != "" {
+			return true
+		}
+		if reasoning, _ := delta["reasoning_content"].(string); reasoning != "" {
+			return true
+		}
+		if calls, _ := delta["tool_calls"].([]any); len(calls) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // directStreamError reads a small error body from a rejected direct stream.

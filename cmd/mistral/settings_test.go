@@ -153,3 +153,23 @@ func TestParseRenderedPluginBlockRoundTripsKeys(t *testing.T) {
 		t.Fatalf("settings = %#v", got)
 	}
 }
+
+// A config written before stream-idle-seconds existed must keep the default
+// guard. Reading the missing key as zero used to disable it silently.
+func TestIdleDefaultSurvivesConfigWithoutKey(t *testing.T) {
+	cfg := []byte("    mistral:\n      enabled: true\n      base-url: \"https://api.mistral.ai/v1\"\n      models:\n        - id: m\n          upstream-id: um\n")
+	got := parseSettings(cfg)
+	if got.StreamIdleSeconds != defaultStreamIdleSeconds {
+		t.Fatalf("StreamIdleSeconds = %d, want the default %d", got.StreamIdleSeconds, defaultStreamIdleSeconds)
+	}
+	// An explicit 0 still means off, so the setting can be disabled on purpose.
+	explicit := parseSettings([]byte("    mistral:\n      stream-idle-seconds: 0\n"))
+	if explicit.StreamIdleSeconds != 0 {
+		t.Fatalf("explicit 0 = %d, want 0", explicit.StreamIdleSeconds)
+	}
+	// And a custom value is kept.
+	custom := parseSettings([]byte("    mistral:\n      stream-idle-seconds: 45\n"))
+	if custom.StreamIdleSeconds != 45 {
+		t.Fatalf("custom = %d, want 45", custom.StreamIdleSeconds)
+	}
+}

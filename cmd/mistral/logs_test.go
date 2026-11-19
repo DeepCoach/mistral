@@ -18,3 +18,22 @@ func TestSummarizeLogsKeepsCacheRatePrecision(t *testing.T) {
 		t.Fatalf("cache_hit_rate = %v, want 0.9043", rate)
 	}
 }
+
+// joinLines ran in quadratic time because it grew the string one concatenation
+// at a time, and every append then paid for a full rewrite of the log.
+func TestJoinLinesKeepsInput(t *testing.T) {
+	lines := []string{"a", "bb", "", "ccc"}
+	if got := joinLines(lines); got != "a\nbb\n\nccc\n" {
+		t.Fatalf("joinLines = %q", got)
+	}
+	if got := joinLines(nil); got != "" {
+		t.Fatalf("joinLines(nil) = %q", got)
+	}
+}
+
+func TestSplitLinesRoundTrips(t *testing.T) {
+	lines := []string{"one", "two", "three"}
+	if got := splitLines(joinLines(lines)); len(got) != len(lines) {
+		t.Fatalf("splitLines(joinLines(x)) = %#v, want %#v", got, lines)
+	}
+}

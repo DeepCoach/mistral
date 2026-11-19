@@ -34,14 +34,17 @@ func toMistralChat(payload, original []byte, sourceFormat, model string, stream 
 	default:
 		chat = doc
 	}
+	// Sanitize the converted map in place. Encoding it just to decode it again
+	// inside rewriteRequestBody cost two extra full passes over a payload that
+	// can be hundreds of kilobytes.
+	rewriteRequestDoc(chat, model)
+	chat["model"] = model
+	chat["stream"] = stream
 	raw, err := encodeJSON(chat)
 	if err != nil {
 		return body, false
 	}
-	if rewritten, ok := rewriteRequestBody(raw, []string{"*"}, model, model); ok {
-		raw = rewritten
-	}
-	return setModel(raw, model, stream), true
+	return raw, true
 }
 
 func normalizeFormat(format string) string {
@@ -66,6 +69,13 @@ func sniffFormat(body []byte) string {
 	if err := decodeJSON(body, &doc); err != nil {
 		return "openai"
 	}
+	return sniffFormatDoc(doc)
+}
+
+// sniffFormatDoc classifies an already decoded body. The caller that decoded it
+// once should use this rather than encoding the answer into bytes and decoding
+// it again.
+func sniffFormatDoc(doc map[string]any) string {
 	if _, ok := doc["contents"]; ok {
 		return "gemini"
 	}
@@ -91,7 +101,7 @@ func looksLikeOpenAIChat(body []byte) bool {
 	if _, ok := doc["messages"]; !ok {
 		return false
 	}
-	return !looksLikeClaude(doc) && sniffFormat(body) == "openai"
+	return !looksLikeClaude(doc) && sniffFormatDoc(doc) == "openai"
 }
 
 func looksLikeClaude(doc map[string]any) bool {

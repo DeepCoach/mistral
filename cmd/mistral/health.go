@@ -21,6 +21,11 @@ const (
 	// below max-retry-interval lets CPA retry the request automatically
 	// instead of blackholing the model for its 60s default.
 	upstreamRetryAfterSecs = 20
+	// maxPendingSSEBytes bounds the buffer that holds a partially received SSE
+	// frame. A well-formed frame is flushed as soon as its separator arrives;
+	// this only matters for an upstream that sends no separator at all, where
+	// the buffer would otherwise grow until the plugin host ran out of memory.
+	maxPendingSSEBytes = 8 << 20
 )
 
 type credentialHealth struct {
@@ -198,14 +203,29 @@ func transientUpstreamStatus(status int) bool {
 	return status >= 500
 }
 
+// truncateText shortens text to at most limit bytes, counting runes so a
+// multi-byte character is never cut in half. The limit is in bytes because the
+// callers bound how much of an upstream error reaches a log line; measuring the
+// input in one unit and cutting in another let Chinese messages run well past
+// the bound they were supposed to respect.
 func truncateText(text string, limit int) string {
 	text = strings.TrimSpace(text)
 	if limit <= 0 || len(text) <= limit {
 		return text
 	}
-	runes := []rune(text)
-	if len(runes) <= limit {
-		return text
+	const ellipsis = "..."
+	budget := limit - len(ellipsis)
+	if budget < 0 {
+		budget = 0
 	}
-	return string(runes[:limit]) + "..."
+	// Building up from the front keeps the cut on a rune boundary without
+	// copying the whole string into runes first.
+	cut := 0
+	for index := range text {
+		if index > budget {
+			break
+		}
+		cut = index
+	}
+	return text[:cut] + ellipsis
 }

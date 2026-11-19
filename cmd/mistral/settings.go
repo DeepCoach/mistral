@@ -9,6 +9,10 @@ const (
 	defaultBaseURL  = "https://api.mistral.ai/v1"
 	configPath      = "/CLIProxyAPI/config.yaml"
 	pluginConfigKey = "mistral"
+	// defaultStreamIdleSeconds is how long a started stream may stay silent
+	// before it is treated as stalled. It matches the upstream Vibe client's
+	// 300s idle limit.
+	defaultStreamIdleSeconds = 300
 )
 
 type settings struct {
@@ -78,6 +82,12 @@ func defaultSettings() settings {
 		LogRetention:    200,
 		Failover:        true,
 		CooldownSeconds: 60,
+		// A silent stream is a real failure mode, but the default has to sit
+		// above the longest legitimate silence. Mistral generates a tool call
+		// whole before sending it, so minutes can pass with no output. The
+		// upstream Vibe client allows 300s of idle for the same reason; below
+		// that the guard would abort healthy generations.
+		StreamIdleSeconds: defaultStreamIdleSeconds,
 		Models: []modelAlias{
 			{Client: "deepseek-v4.1-flash", Upstream: "deepseek-v4-1-flash-1017"},
 			{Client: "glm-5.3", Upstream: "zai-glm-5-3"},
@@ -102,7 +112,12 @@ func parseSettings(configYAML []byte) settings {
 	if parsed.LogRetention > 0 {
 		current.LogRetention = parsed.LogRetention
 	}
-	current.StreamIdleSeconds = parsed.StreamIdleSeconds
+	// Only an explicit setting overrides the default. Reading the parsed zero
+	// value as "disable" would silently switch the idle guard off for every
+	// config written before the key existed.
+	if parsed.StreamIdleSeconds != nil {
+		current.StreamIdleSeconds = *parsed.StreamIdleSeconds
+	}
 	if parsed.Failover != nil {
 		current.Failover = *parsed.Failover
 	}
@@ -127,7 +142,7 @@ type parsedSettings struct {
 	BaseURL           string
 	APIKey            string
 	LogRetention      int
-	StreamIdleSeconds int
+	StreamIdleSeconds *int
 	Failover          *bool
 	IgnoreProxy       *bool
 	CooldownSeconds   *int
@@ -251,7 +266,10 @@ func parseSettingsText(text string) parsedSettings {
 		case name == "log-retention":
 			fmt.Sscanf(value, "%d", &out.LogRetention)
 		case name == "stream-idle-seconds":
-			fmt.Sscanf(value, "%d", &out.StreamIdleSeconds)
+			idle := 0
+			if _, scanErr := fmt.Sscanf(value, "%d", &idle); scanErr == nil {
+				out.StreamIdleSeconds = &idle
+			}
 		case name == "failover":
 			enabled := value == "true" || value == "1" || value == "yes" || value == "on"
 			out.Failover = &enabled
@@ -310,8 +328,31 @@ func unquote(value string) string {
 	return value
 }
 
+// quoteYAML writes a double-quoted YAML scalar. Backslash is escaped first:
+// replacing quotes alone left a trailing backslash, or an escaped quote, to
+// consume the closing quote and produce a document the host cannot parse.
 func quoteYAML(value string) string {
-	return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
+	var builder strings.Builder
+	builder.Grow(len(value) + 2)
+	builder.WriteByte('"')
+	for _, r := range value {
+		switch r {
+		case '\\':
+			builder.WriteString(`\\`)
+		case '"':
+			builder.WriteString(`\"`)
+		case '\n':
+			builder.WriteString(`\n`)
+		case '\r':
+			builder.WriteString(`\r`)
+		case '\t':
+			builder.WriteString(`\t`)
+		default:
+			builder.WriteRune(r)
+		}
+	}
+	builder.WriteByte('"')
+	return builder.String()
 }
 
 func renderPluginBlock(s settings) string {

@@ -113,6 +113,21 @@ func rewriteRequestBody(body []byte, patterns []string, model, requested string)
 	if err := decodeJSON(body, &doc); err != nil {
 		return nil, false
 	}
+	if !rewriteRequestDoc(doc, model) {
+		return nil, false
+	}
+	out, err := encodeJSON(doc)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
+}
+
+// rewriteRequestDoc applies the request sanitizer to an already decoded body and
+// reports whether anything changed. Callers that converted another protocol
+// into a chat body hold that map already; running the sanitizer on it directly
+// saves decoding and re-encoding a payload that can be hundreds of kilobytes.
+func rewriteRequestDoc(doc map[string]any, model string) bool {
 	changed := false
 	if reasoning, ok := doc["reasoning"].(map[string]any); ok {
 		if effort, ok := reasoning["effort"].(string); ok && effort != "" {
@@ -140,11 +155,7 @@ func rewriteRequestBody(body []byte, patterns []string, model, requested string)
 	}
 	messages, ok := doc["messages"].([]any)
 	if !ok {
-		if !changed {
-			return nil, false
-		}
-		out, err := encodeJSON(doc)
-		return out, err == nil
+		return changed
 	}
 	for _, item := range messages {
 		msg, ok := item.(map[string]any)
@@ -155,14 +166,7 @@ func rewriteRequestBody(body []byte, patterns []string, model, requested string)
 			changed = true
 		}
 	}
-	if !changed {
-		return nil, false
-	}
-	out, err := encodeJSON(doc)
-	if err != nil {
-		return nil, false
-	}
-	return out, true
+	return changed
 }
 
 func rewriteMessage(msg map[string]any) bool {
@@ -188,11 +192,17 @@ func rewriteMessage(msg map[string]any) bool {
 			changed = true
 		}
 	} else {
-		for _, key := range []string{"reasoning_content", "reasoning", "refusal"} {
-			if _, ok := msg[key]; ok {
-				delete(msg, key)
-				changed = true
+		// An unrecognized role still has to be sanitized. Dropping only the
+		// three known OpenAI extras left every other unknown field to reach the
+		// upstream, where it is a 422. Keep the role and its content and let
+		// everything else go: the request stays valid even if the upstream
+		// rejects the role itself.
+		for key := range msg {
+			if key == "role" || key == "content" {
+				continue
 			}
+			delete(msg, key)
+			changed = true
 		}
 	}
 	if parts, ok := msg["content"].([]any); ok {
@@ -413,17 +423,30 @@ var effortByModel = map[string][]string{
 	"zai-glm-5-3-flash":           {"low", "high", "max"},
 }
 
-var defaultEffortLadder = []string{"none", "low", "high", "xhigh", "max"}
+var defaultEffortLadder = []string{"none", "low", "medium", "high", "xhigh", "max"}
 
-// unsupported client values are remapped onto the nearest upstream level, so
-// an effort the model cannot express never turns into a hard failure.
-var effortAliases = map[string]string{
-	"minimal": "low",
-	"medium":  "high",
-	"default": "high",
-	"auto":    "high",
+// effortRank orders the standard levels from least to most thinking. It is what
+// lets an out-of-ladder value land on the nearest level a model actually
+// advertises instead of jumping to an extreme.
+var effortRank = map[string]int{
+	"none": 0, "low": 1, "medium": 2, "high": 3, "xhigh": 4, "max": 5,
 }
 
+// unsupported client values are remapped onto a standard level. "off" is how
+// OpenAI-compatible clients turn thinking off, so it has to mean none; without
+// this alias it fell through to the strongest level and forced the thinking the
+// client asked to skip.
+var effortAliases = map[string]string{
+	"off":     "none",
+	"minimal": "low",
+	"default": "medium",
+	"auto":    "medium",
+}
+
+// normalizeThinkingEffort maps a client effort onto a level the model accepts.
+// An unknown value goes to the nearest advertised level, never to the extreme:
+// a typo used to become the most expensive setting on the model silently, and
+// it is not worth paying for a guess.
 func normalizeEffort(model, effort string) string {
 	effort = strings.ToLower(strings.TrimSpace(effort))
 	if effort == "" {
@@ -438,14 +461,38 @@ func normalizeEffort(model, effort string) string {
 			return effort
 		}
 	}
-	if alias, ok := effortAliases[effort]; ok {
+	target := effort
+	if alias, ok := effortAliases[target]; ok {
+		target = alias
+	}
+	if rank, ok := effortRank[target]; ok {
+		// A model lists its levels cheapest first. Moving down is only allowed
+		// when the client asked for less than the model can do at all, so a
+		// client asking for low on a none/high model gets that model's lowest
+		// level rather than silence: "low" means thinking, just not much.
+		if rank <= effortRank[levels[0]] {
+			return levels[0]
+		}
+		// Otherwise round up to the nearest level the model has. Rounding down
+		// would silently do less work than the client asked for, and a typo used
+		// to jump straight to the most expensive setting; going one step up is
+		// neither.
+		best := ""
 		for _, level := range levels {
-			if level == alias {
-				return alias
+			if effortRank[level] >= rank {
+				if best == "" || effortRank[level] < effortRank[best] {
+					best = level
+				}
 			}
 		}
+		if best != "" {
+			return best
+		}
+		// Nothing at or above the request: the model's strongest level is the
+		// closest it can get.
+		return levels[len(levels)-1]
 	}
-	// Unknown or out-of-range: fall back to the strongest level the model
-	// advertises, which keeps thinking on instead of failing the request.
-	return levels[len(levels)-1]
+	// Not a level this plugin knows: keep the model's default rather than
+	// guessing a value the API may reject or bill for.
+	return ""
 }
