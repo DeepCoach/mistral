@@ -142,6 +142,18 @@ tbody tr:hover td { background:var(--soft); }
 .cred-card:first-of-type { border-top:0; }
 .cred-card.editing { background:var(--accent-soft); margin:0 -20px; padding:15px 20px; }
 .cred-card .cred-meta { font-size:12px; }
+.quota-block { margin-top:10px; padding-top:9px; border-top:1px dashed var(--line); max-width:560px; }
+.quota-head { display:flex; justify-content:space-between; gap:12px; align-items:baseline; color:var(--muted); font-size:11.5px; flex-wrap:wrap; }
+.quota-head b { color:var(--ink); font-family:var(--mono); font-size:11.5px; font-weight:600; }
+.qrow { margin-top:8px; }
+.qrow:first-child { margin-top:0; }
+.qbar { height:8px; border-radius:999px; background:var(--soft); border:1px solid var(--line); overflow:hidden; margin-top:5px; }
+.qbar i { display:block; height:100%; background:var(--accent); border-radius:999px 0 0 999px; }
+.qbar i.warn { background:#d99a00; }
+.qbar i.full { background:var(--bad); }
+.qfoot { display:flex; justify-content:space-between; gap:10px; margin-top:4px; color:var(--muted); font-size:11px; }
+.qbad { color:var(--bad); font-weight:600; }
+.qplan { display:inline-flex; gap:6px; align-items:center; }
 .form { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:16px; padding-top:16px; border-top:1px solid var(--line); }
 input, select { padding:8px 10px; border:1px solid var(--line); border-radius:9px; background:var(--surface); color:var(--ink); min-width:0; }
 input.wide { width:100%; margin-top:10px; }
@@ -393,7 +405,42 @@ const STRINGS = {
     cacheKeySession: '缓存键来自 CPA 会话身份',
     cacheKeyUser: '缓存键按首条用户消息生成',
     cacheKeyNone: '没有缓存键',
-    missingSession: '没有读到管理页的登录状态。请从 CPA 管理页的 Mistral 菜单打开。'
+    missingSession: '没有读到管理页的登录状态。请从 CPA 管理页的 Mistral 菜单打开。',
+    quotaPlan: '套餐 {plan}',
+    quotaApi: 'API 额度',
+    quotaVibe: 'Vibe Code 额度',
+    quotaResets: '重置 {time}',
+    quotaDays: '{n} 天后',
+    quotaExhausted: '额度用尽',
+    quotaApiExhausted: 'API 额度用尽',
+    quotaVibeExhausted: 'Vibe 额度用尽',
+    quotaNone: '还没有额度数据，后台检查完成后会显示。',
+    quotaError: '额度读取失败：{error}',
+    quotaUpdated: '更新于 {age}',
+    quotaJustNow: '刚刚',
+    quotaSecondsAgo: '{n} 秒前',
+    quotaMinutesAgo: '{n} 分钟前',
+    quotaHoursAgo: '{n} 小时前',
+    quotaRefresh: '刷新额度',
+    quotaChecking: '正在刷新额度...',
+    quotaRefreshed: '额度已刷新',
+    quotaPayg: 'PAYG 开启 · 超出按量计费',
+    monitoring: '额度监控',
+    monitoringHint: '读取套餐的月度额度，超额时代替手动停用，并在重置后自动恢复。',
+    quotaRefreshInterval: '额度检查间隔',
+    quotaRefreshHint: '后台检查间隔，10 到 3600 秒。',
+    quotaDisabledHint: '额度监控已关闭，不再读取额度。',
+    quotaAppliesVibe: '本 key 计入 Vibe Code 额度',
+    quotaAppliesApi: '本 key 计入 API 额度',
+    quotaAppliesUnknown: '计费额度未知（WHOAMI 不可用）',
+    quotaScopeChat: 'CHAT key',
+    quotaScopeApi: 'API key',
+    quotaScopeCode: 'CODE key',
+    quotaApplicableRow: '本 key 计费',
+    quotaAutoDisabled: '已自动停用，{time}',
+    quotaAutoResume: '{time} 后自动恢复',
+    consoleUrl: 'Console URL',
+    consoleUrlHint: '用 /api/vibe/whoami 判断 key 的计费额度；留空则不自动停用。'
   },
   en: {
     tagline: 'CPA upstream plugin · credentials, models, and request ledger',
@@ -578,7 +625,42 @@ const STRINGS = {
     cacheKeySession: 'Cache key from CPA session identity',
     cacheKeyUser: 'Cache key derived from first user message',
     cacheKeyNone: 'No cache key',
-    missingSession: 'Could not read the management session. Open this page from the Mistral menu in CPA.'
+    missingSession: 'Could not read the management session. Open this page from the Mistral menu in CPA.',
+    quotaPlan: 'Plan {plan}',
+    quotaApi: 'API allowance',
+    quotaVibe: 'Vibe Code allowance',
+    quotaResets: 'resets {time}',
+    quotaDays: 'in {n}d',
+    quotaExhausted: 'Allowance spent',
+    quotaApiExhausted: 'API allowance spent',
+    quotaVibeExhausted: 'Vibe allowance spent',
+    quotaNone: 'No allowance data yet. The background check will fill this in.',
+    quotaError: 'Allowance read failed: {error}',
+    quotaUpdated: 'updated {age}',
+    quotaJustNow: 'just now',
+    quotaSecondsAgo: '{n}s ago',
+    quotaMinutesAgo: '{n}m ago',
+    quotaHoursAgo: '{n}h ago',
+    quotaRefresh: 'Refresh allowance',
+    quotaChecking: 'Refreshing allowance...',
+    quotaRefreshed: 'Allowance refreshed',
+    quotaPayg: 'PAYG on · usage past the allowance is billed',
+    monitoring: 'Quota monitoring',
+    monitoringHint: 'Read the plan allowance, pause a credential automatically when it is spent, and bring it back after the reset.',
+    quotaRefreshInterval: 'Quota check interval',
+    quotaRefreshHint: 'Seconds between background checks, 10 to 3600.',
+    quotaDisabledHint: 'Quota monitoring is off; allowances are not read.',
+    quotaAppliesVibe: 'This key bills the Vibe Code allowance',
+    quotaAppliesApi: 'This key bills the API allowance',
+    quotaAppliesUnknown: 'Billing allowance unknown (whoami unavailable)',
+    quotaScopeChat: 'CHAT key',
+    quotaScopeApi: 'API key',
+    quotaScopeCode: 'CODE key',
+    quotaApplicableRow: 'bills this key',
+    quotaAutoDisabled: 'paused automatically, {time}',
+    quotaAutoResume: 'resumes {time}',
+    consoleUrl: 'Console URL',
+    consoleUrlHint: 'Reads /api/vibe/whoami to learn which allowance the key bills. Empty disables auto-pause.'
   }
 };
 const MANUAL_LANGUAGE_KEY = 'mistral-console-language';
@@ -595,6 +677,7 @@ let modelTests = {};
 let lastLogs = [];
 let lastLogSummary = {};
 let logFilter = 'all';
+let quotaPollBusy = false;
 
 function decodeAuth(raw) {
   if (!raw) return null;
@@ -768,6 +851,77 @@ function clip(text, limit) {
 function num(value) { return Number(value || 0).toLocaleString(lang === 'en' ? 'en-US' : 'zh-CN'); }
 function pct(value) { return Math.round(Number(value || 0) * 100) + '%'; }
 function pct1(value) { return (Number(value || 0) * 100).toFixed(1) + '%'; }
+function qMoney(value, currency) {
+  const n = Number(value || 0);
+  const symbol = currency === 'EUR' ? '€' : currency === 'USD' ? '$' : (currency ? String(currency) + ' ' : '');
+  return esc(symbol + n.toFixed(2));
+}
+function qPercent(value) {
+  const n = Number(value || 0);
+  if (n >= 100) return '100%';
+  if (n <= 0) return '0%';
+  return n.toFixed(1) + '%';
+}
+function quotaAge(seconds) {
+  const value = Number(seconds || 0);
+  if (value < 10) return t('quotaJustNow');
+  if (value < 60) return t('quotaSecondsAgo', {n:value});
+  if (value < 3600) return t('quotaMinutesAgo', {n:Math.floor(value / 60)});
+  return t('quotaHoursAgo', {n:Math.floor(value / 3600)});
+}
+function quotaResetText(reset) {
+  if (!reset) return '';
+  const instant = Date.parse(reset);
+  if (isNaN(instant)) return t('quotaResets', {time:esc(reset)});
+  const days = Math.ceil((instant - Date.now()) / 86400000);
+  return t('quotaResets', {time:shortTime(reset)}) + (days > 0 ? ' · ' + t('quotaDays', {n:days}) : '');
+}
+function quotaScopeBadge(scope) {
+  const value = String(scope || '').toUpperCase();
+  if (value === 'CHAT') return t('quotaScopeChat');
+  if (value === 'API') return t('quotaScopeApi');
+  if (value === 'MISTRAL_CODE') return t('quotaScopeCode');
+  return '';
+}
+function quotaApplicableLabel(quota) {
+  if (quota.applicable === 'vibe') return t('quotaAppliesVibe');
+  if (quota.applicable === 'api') return t('quotaAppliesApi');
+  return t('quotaAppliesUnknown');
+}
+function quotaBudgetRow(label, budget, applicable) {
+  if (!budget) return '';
+  const raw = Number(budget.usage_percentage || 0);
+  const pctv = Math.max(0, Math.min(100, raw));
+  const cls = budget.exhausted ? 'full' : (pctv >= 90 ? 'warn' : '');
+  const left = budget.exhausted
+    ? '<span class="qbad">' + t('quotaExhausted') + '</span>'
+    : (budget.payg_enabled ? t('quotaPayg') : qPercent(raw));
+  return '<div class="qrow"><div class="quota-head"><span>' + label + (applicable ? ' <span class="chip">' + t('quotaApplicableRow') + '</span>' : '') + '</span><b>' + qMoney(budget.used, budget.currency) + ' / ' + qMoney(budget.initial_budget, budget.currency) + '</b></div>'
+    + '<div class="qbar"><i class="' + cls + '" style="width:' + pctv.toFixed(2) + '%"></i></div>'
+    + '<div class="qfoot"><span>' + left + '</span><span>' + quotaResetText(budget.reset_at) + '</span></div></div>';
+}
+function quotaBlock(item) {
+  const quota = item.quota;
+  if (!quota) return '<div class="quota-block"><div class="quota-head"><span>' + t('quotaNone') + '</span></div></div>';
+  const scope = quotaScopeBadge(quota.scope);
+  const head = '<div class="quota-head"><span class="qplan">' + (quota.plan ? t('quotaPlan', {plan:esc(quota.plan)}) : '') + (scope ? ' <span class="chip">' + esc(scope) + '</span>' : '') + '</span><span>' + (quota.fetched_at ? t('quotaUpdated', {age:quotaAge(quota.age_seconds)}) : '') + '</span></div>';
+  const error = quota.error ? '<div class="err" title="' + esc(quota.error) + '">' + t('quotaError', {error:esc(clip(quota.error, 90))}) + '</div>' : '';
+  const paused = quota.auto_disabled
+    ? '<div class="qfoot"><span class="qbad">' + t('quotaAutoDisabled', {time:quotaResetText(quota.reset_at)}) + '</span></div>'
+    : '';
+  return '<div class="quota-block">' + head + '<div class="qfoot" style="margin-top:3px"><span>' + quotaApplicableLabel(quota) + '</span></div>'
+    + quotaBudgetRow(t('quotaApi'), quota.api, quota.applicable === 'api') + quotaBudgetRow(t('quotaVibe'), quota.vibe, quota.applicable === 'vibe') + paused + error + '</div>';
+}
+function quotaInline(item) {
+  const quota = item.quota;
+  if (!quota || !(quota.api || quota.vibe)) return '';
+  const bits = [];
+  if (quota.api) bits.push(t('quotaApi') + ' ' + qMoney(quota.api.used, quota.api.currency) + ' / ' + qMoney(quota.api.initial_budget, quota.api.currency));
+  if (quota.vibe) bits.push(t('quotaVibe') + ' ' + qMoney(quota.vibe.used, quota.vibe.currency) + ' / ' + qMoney(quota.vibe.initial_budget, quota.vibe.currency));
+  const flags = [];
+  if (quota.auto_disabled) flags.push(t('quotaExhausted') + (quota.reset_at ? ' · ' + t('quotaAutoResume', {time:shortTime(quota.reset_at)}) : ''));
+  return '<div class="cred-meta">' + bits.join(' · ') + (flags.length ? ' · <span class="qbad">' + flags.join(' · ') + '</span>' : '') + '</div>';
+}
 function sec(ms) {
   const value = Number(ms || 0);
   return value > 0 ? (value / 1000).toFixed(1) + 's' : '—';
@@ -803,8 +957,10 @@ function fact(label, value) {
 }
 function credentialStatus(item) {
   const health = item.health || {};
+  const quota = item.quota || {};
   if (item.disabled) return {cls:'off', text:t('disabled')};
   if (!item.has_key) return {cls:'warn', text:t('missingKey')};
+  if (quota.auto_disabled) return {cls:'bad', text:t('quotaExhausted')};
   if (health.cooldown_left_seconds > 0) return {cls:'warn', text:t('cooling', {n:health.cooldown_left_seconds})};
   return {cls:'ok', text:t('healthy')};
 }
@@ -822,7 +978,12 @@ function reasonOptions(current) {
   return ['','low','medium','high','xhigh','max'].map(value => '<option value="' + value + '"' + (value === current ? ' selected' : '') + '>' + (value || t('passthrough')) + '</option>').join('');
 }
 function healthyCount() {
-  return (data.credentials || []).filter(item => !item.disabled && item.has_key && !(item.health && item.health.cooldown_left_seconds > 0)).length;
+  return (data.credentials || []).filter(item => {
+    const quota = item.quota || {};
+    return !item.disabled && item.has_key
+      && !(item.health && item.health.cooldown_left_seconds > 0)
+      && !quota.auto_disabled;
+  }).length;
 }
 function render() {
   if (!data) return;
@@ -864,6 +1025,7 @@ function renderOverview() {
     return '<div class="cred"><span class="dot ' + status.cls + '"></span><div class="cred-main">'
       + '<div class="cred-title"><b>' + esc(item.label) + '</b>' + (item.id === activeId ? '<span class="chip">' + t('active') + '</span>' : '') + '</div>'
       + '<div class="cred-meta">' + esc(item.mask || t('noKey')) + ' · ' + t('priority', {n:item.priority}) + '</div>'
+      + quotaInline(item)
       + (health.last_checked ? '<div class="cred-meta">' + t('checkedAt', {time:esc(timeText(health.last_checked)), latency:sec(health.last_latency_ms)}) + '</div>' : '')
       + (health.last_error ? '<div class="err" title="' + esc(health.last_error) + '">' + esc(clip(health.last_error, 70)) + '</div>' : '')
       + '</div>' + statusBadge(item) + '</div>';
@@ -876,6 +1038,7 @@ function renderOverview() {
     + fact(t('ignoreProxy'), data.ignore_proxy ? t('ignoreProxyOn') : t('ignoreProxyOff'))
     + fact(t('idleCutoff'), (data.stream_idle_seconds || 0) > 0 ? data.stream_idle_seconds + 's' : t('off'))
     + fact(t('logRetention'), t('entriesCount', {n:data.log_retention}))
+    + fact(t('monitoring'), data.quota_monitoring ? (t('on') + ' · ' + (data.quota_refresh_seconds || 60) + 's') : t('off'))
     + '</div></div>';
   const recentRows = recent.slice(0, 8).map(item => {
     const ok = item.status >= 200 && item.status < 400;
@@ -922,8 +1085,9 @@ function renderCredentials() {
     const error = health.last_error ? '<div class="err" title="' + esc(health.last_error) + '">' + esc(clip(health.last_error, 90)) + '</div>' : '';
     return '<div class="cred-card' + (item.id === editingCredential ? ' editing' : '') + '"><div class="grow"><div class="cred-title"><b>' + esc(item.label) + '</b> <span class="mono muted">' + esc(item.id) + '</span>'
       + statusBadge(item) + (item.id === data.active ? '<span class="chip">' + t('active') + '</span>' : '') + '</div>'
-      + '<div class="cred-meta">' + esc(item.mask || t('noKey')) + ' · ' + t('priority', {n:item.priority}) + '</div>' + checked + error + '</div>'
+      + '<div class="cred-meta">' + esc(item.mask || t('noKey')) + ' · ' + t('priority', {n:item.priority}) + '</div>' + checked + error + quotaBlock(item) + '</div>'
       + '<div class="actions"><button data-probe="' + esc(item.id) + '">' + t('check') + '</button>'
+      + '<button data-qrefresh="' + esc(item.id) + '">' + t('quotaRefresh') + '</button>'
       + '<button data-edit="' + esc(item.id) + '">' + t('edit') + '</button>'
       + (health.cooldown_left_seconds > 0 ? '<button data-reset="' + esc(item.id) + '">' + t('resetCooldown') + '</button>' : '')
       + '<button data-toggle="' + esc(item.id) + '">' + (item.disabled ? t('enable') : t('disable')) + '</button>'
@@ -938,8 +1102,9 @@ function renderCredentials() {
     + (editing ? '<button id="c-cancel">' + t('cancel') + '</button>' : '') + '</div>'
     + '<div class="muted" style="margin-top:8px">' + t('priorityHint') + '</div></div>';
   document.querySelector('#credentials').innerHTML =
-    '<div class="card"><div class="view-head"><div><h2>' + t('credentialsTitle') + '</h2><p>' + t('credentialsHint') + '</p></div><span class="muted">' + t('credentialsAvailable', {healthy:healthyCount(), total:(data.credentials || []).length}) + '</span></div>'
+    '<div class="card"><div class="view-head"><div><h2>' + t('credentialsTitle') + '</h2><p>' + t('credentialsHint') + '</p></div><div class="actions"><span class="muted">' + t('credentialsAvailable', {healthy:healthyCount(), total:(data.credentials || []).length}) + '</span><button id="q-refresh-all">' + t('quotaRefresh') + '</button></div></div>'
     + (rows || '<div class="empty"><b>' + t('noCredentials') + '</b>' + t('credentialsEmptyHint') + '</div>')
+    + (data.quota_monitoring ? '' : '<div class="muted" style="margin-top:10px">' + t('quotaDisabledHint') + '</div>')
     + editor
     + '<div class="form"><a class="button" href="https://chat.mistral.ai/code/extensions" target="_blank" rel="noopener noreferrer">' + t('createVibeKey') + '</a><span class="muted">' + t('vibeKeyHint') + '</span></div></div>';
   document.querySelector('#c-save').onclick = saveCredential;
@@ -948,6 +1113,9 @@ function renderCredentials() {
   document.querySelectorAll('[data-probe]').forEach(btn => btn.onclick = () => probeCredential(btn.dataset.probe));
   document.querySelectorAll('[data-edit]').forEach(btn => btn.onclick = () => { editingCredential = btn.dataset.edit; render(); });
   document.querySelectorAll('[data-reset]').forEach(btn => btn.onclick = () => applyAction({action:'reset-cooldown', id:btn.dataset.reset}, t('cooldownCleared')));
+  document.querySelectorAll('[data-qrefresh]').forEach(btn => btn.onclick = () => refreshQuota(btn.dataset.qrefresh));
+  const refreshAll = document.querySelector('#q-refresh-all');
+  if (refreshAll) refreshAll.onclick = () => refreshQuota('');
   document.querySelectorAll('[data-toggle]').forEach(btn => btn.onclick = () => {
     const item = (data.credentials || []).find(entry => entry.id === btn.dataset.toggle);
     if (!item) return;
@@ -1087,17 +1255,23 @@ function renderConfig() {
     '<div class="card"><div class="view-head"><div><h2>' + t('configTitle') + '</h2><p>' + t('configHint') + '</p></div></div>'
     + '<div class="config-grid">'
     + '<div class="field full"><label for="base">' + t('baseUrl') + '<span class="hint">' + t('baseUrlHint') + '</span></label><input id="base" value="' + esc(data.base_url) + '"></div>'
+    + '<div class="field full"><label for="console">' + t('consoleUrl') + '<span class="hint">' + t('consoleUrlHint') + '</span></label><input id="console" value="' + esc(data.console_url || '') + '"></div>'
     + '<div class="field"><label for="keep">' + t('logRetention') + '<span class="hint">' + t('logRetentionHint') + '</span></label><input id="keep" type="number" min="10" max="5000" value="' + data.log_retention + '"></div>'
     + '<div class="field"><label for="idle">' + t('idleCutoff') + '<span class="hint">' + t('idleHint') + '</span></label><input id="idle" type="number" min="0" max="3600" value="' + (data.stream_idle_seconds || 0) + '"></div>'
     + '<div class="field"><label for="cooldown">' + t('cooldown') + '<span class="hint">' + t('cooldownHint') + '</span></label><input id="cooldown" type="number" min="0" max="3600" value="' + data.cooldown_seconds + '"></div>'
     + '<div class="field"><label>' + t('failover') + '<span class="hint">' + t('failoverHint') + '</span></label><span class="switch"><input id="failover" type="checkbox"' + (data.failover ? ' checked' : '') + '> ' + t('on') + '</span></div>'
     + '<div class="field"><label>' + t('ignoreProxy') + '<span class="hint">' + t('ignoreProxyHint') + '</span></label><span class="switch"><input id="ignore-proxy" type="checkbox"' + (data.ignore_proxy ? ' checked' : '') + '> ' + t('on') + '</span></div>'
+    + '<div class="field"><label>' + t('monitoring') + '<span class="hint">' + t('monitoringHint') + '</span></label><span class="switch"><input id="quota-monitor" type="checkbox"' + (data.quota_monitoring ? ' checked' : '') + '> ' + t('on') + '</span></div>'
+    + '<div class="field"><label for="quota-refresh">' + t('quotaRefreshInterval') + '<span class="hint">' + t('quotaRefreshHint') + '</span></label><input id="quota-refresh" type="number" min="10" max="3600" value="' + (data.quota_refresh_seconds || 60) + '"></div>'
     + '</div><div class="form"><button class="primary" id="save-settings">' + t('saveSettings') + '</button><span class="muted">' + t('failoverOffHint') + '</span></div></div>';
   document.querySelector('#save-settings').onclick = () => applyAction({
     action:'put-settings', base_url:val('#base'), log_retention:Number(val('#keep')),
     stream_idle_seconds:Number(val('#idle')), failover:document.querySelector('#failover').checked,
     ignore_proxy:document.querySelector('#ignore-proxy').checked,
-    cooldown_seconds:Number(val('#cooldown'))
+    cooldown_seconds:Number(val('#cooldown')),
+    quota_monitoring:document.querySelector('#quota-monitor').checked,
+    quota_refresh_seconds:Number(val('#quota-refresh')),
+    console_url:val('#console')
   }, t('settingsSaved'));
 }
 async function applyAction(action, note) {
@@ -1170,9 +1344,36 @@ function cacheKeyHint(item) {
   return t('cacheKeyNone');
 }
 function val(sel) { const node = document.querySelector(sel); return node ? node.value.trim() : ''; }
+async function refreshQuota(id) {
+  if (quotaPollBusy) return;
+  quotaPollBusy = true;
+  msg.textContent = t('quotaChecking');
+  try {
+    const payload = {action:'quota'};
+    if (id) payload.id = id;
+    data = await api(payload);
+    render();
+    msg.textContent = data.quota_monitoring ? t('quotaRefreshed') : t('quotaDisabledHint');
+  } catch (error) { msg.textContent = error.message; }
+  finally { quotaPollBusy = false; }
+}
+setInterval(async () => {
+  // Repaint from the cached state so the allowance figures stay live without
+  // a reload. Reading billing is the background monitor's job: forcing a
+  // network refresh from every open page would duplicate it and block the
+  // management request. The Refresh allowance buttons force a live read.
+  // Skip while the user is typing or editing so a poll cannot wipe a form.
+  if (document.hidden || quotaPollBusy || !data || !managementKey || editingCredential) return;
+  const focused = document.activeElement;
+  if (focused && ['INPUT','SELECT','TEXTAREA'].indexOf(focused.tagName) >= 0) return;
+  try { data = await api({action:'state'}); render(); } catch (error) {}
+}, 30000);
 async function refresh() {
   data = await api({action:'state'});
   render();
+  // First visit after a restart: the cache may be empty, so pull billing
+  // immediately instead of waiting for the 30s poll.
+  if ((data.credentials || []).some(item => item.has_key && !item.quota)) refreshQuota('');
 }
 applyStaticI18n();
 refresh().catch(error => { msg.textContent = error.message; });

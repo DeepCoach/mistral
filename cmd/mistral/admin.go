@@ -17,6 +17,7 @@ func publicState() map[string]any {
 		creds = append(creds, map[string]any{
 			"id": item.ID, "label": item.Label, "mask": maskKey(item.APIKey),
 			"has_key": item.APIKey != "", "disabled": item.Disabled, "priority": item.Priority,
+			"quota": quotaView(item.ID, current.QuotaMonitoring),
 			"health": map[string]any{
 				"failures": health.Failures, "cooldown_until": formatTime(health.CooldownUntil),
 				"cooldown_left_seconds": cooldownLeft(health), "last_error": health.LastError,
@@ -31,7 +32,11 @@ func publicState() map[string]any {
 			"id": item.Client, "upstream_id": item.Upstream, "reasoning": item.Reasoning,
 		})
 	}
-	activeCredential, _ := current.pick()
+	activeItems := current.availableCandidates()
+	activeCredential := credential{}
+	if len(activeItems) > 0 {
+		activeCredential = activeItems[0]
+	}
 	logs := recentLogs(200)
 	recent := make([]requestLog, 0, 30)
 	recent = append(recent, logs...)
@@ -39,11 +44,14 @@ func publicState() map[string]any {
 		recent = recent[:30]
 	}
 	return map[string]any{
-		"base_url": current.BaseURL, "log_retention": current.LogRetention,
+		"base_url": current.BaseURL, "console_url": current.ConsoleURL,
+		"log_retention":       current.LogRetention,
 		"stream_idle_seconds": current.StreamIdleSeconds,
 		"failover":            current.Failover, "ignore_proxy": current.IgnoreProxy,
-		"cooldown_seconds": current.CooldownSeconds,
-		"credentials":      creds, "models": models, "active": activeCredential.ID, "active_label": activeCredential.Label,
+		"cooldown_seconds":      current.CooldownSeconds,
+		"quota_monitoring":      current.QuotaMonitoring,
+		"quota_refresh_seconds": current.QuotaRefreshSeconds,
+		"credentials":           creds, "models": models, "active": activeCredential.ID, "active_label": activeCredential.Label,
 		"configured": current.configured(),
 		"stats":      summarizeLogs(logs), "recent": recent, "version": pluginVersion,
 	}
@@ -66,11 +74,14 @@ type adminRequest struct {
 	UpstreamID        string       `json:"upstream_id"`
 	Reasoning         string       `json:"reasoning"`
 	BaseURL           string       `json:"base_url"`
+	ConsoleURL        *string      `json:"console_url"`
 	LogRetention      int          `json:"log_retention"`
 	StreamIdleSeconds *int         `json:"stream_idle_seconds"`
 	Failover          *bool        `json:"failover"`
 	IgnoreProxy       *bool        `json:"ignore_proxy"`
 	CooldownSeconds   *int         `json:"cooldown_seconds"`
+	QuotaMonitoring   *bool        `json:"quota_monitoring"`
+	QuotaRefresh      *int         `json:"quota_refresh_seconds"`
 	Limit             int          `json:"limit"`
 	CredentialID      string       `json:"credential_id"`
 	Items             []modelInput `json:"items"`
@@ -88,6 +99,11 @@ func handleAdmin(body []byte, callbackID string) (int, []byte) {
 	case "logs":
 		logs := recentLogs(clampInt(req.Limit, 1, 500))
 		return 200, jsonValue(map[string]any{"logs": logs, "summary": summarizeLogs(logs)})
+	case "quota":
+		if next.QuotaMonitoring {
+			refreshQuotas(next, callbackID, strings.TrimSpace(req.ID))
+		}
+		return 200, jsonValue(publicState())
 	case "put-credential":
 		if status, message := putCredential(&next, req); status != 0 {
 			return status, jsonError(message)
@@ -102,6 +118,7 @@ func handleAdmin(body []byte, callbackID string) (int, []byte) {
 		}
 		next.Credentials = kept
 		resetCredentialHealth(id)
+		dropQuotaSnapshot(id)
 	case "put-model":
 		id := strings.TrimSpace(req.ID)
 		upstream := strings.TrimSpace(req.UpstreamID)
@@ -153,6 +170,9 @@ func handleAdmin(body []byte, callbackID string) (int, []byte) {
 		if value := strings.TrimSpace(req.BaseURL); value != "" {
 			next.BaseURL = strings.TrimRight(value, "/")
 		}
+		if req.ConsoleURL != nil {
+			next.ConsoleURL = strings.TrimRight(strings.TrimSpace(*req.ConsoleURL), "/")
+		}
 		if req.LogRetention > 0 {
 			next.LogRetention = req.LogRetention
 		}
@@ -167,6 +187,12 @@ func handleAdmin(body []byte, callbackID string) (int, []byte) {
 		}
 		if req.CooldownSeconds != nil {
 			next.CooldownSeconds = *req.CooldownSeconds
+		}
+		if req.QuotaMonitoring != nil {
+			next.QuotaMonitoring = *req.QuotaMonitoring
+		}
+		if req.QuotaRefresh != nil {
+			next.QuotaRefreshSeconds = *req.QuotaRefresh
 		}
 		if err := validateRuntimeSettings(next); err != nil {
 			return 400, jsonError(err.Error())
@@ -186,6 +212,7 @@ func handleAdmin(body []byte, callbackID string) (int, []byte) {
 		return 500, jsonError(err.Error())
 	}
 	storeSettings(next)
+	wakeQuotaMonitor()
 	return 200, jsonValue(publicState())
 }
 
@@ -216,6 +243,7 @@ func putCredential(next *settings, req adminRequest) (int, string) {
 		if key != "" && key != item.APIKey {
 			item.APIKey = key
 			resetCredentialHealth(item.ID)
+			dropQuotaSnapshot(item.ID)
 		}
 		if req.Disabled != nil {
 			item.Disabled = *req.Disabled
@@ -254,6 +282,12 @@ func validateRuntimeSettings(current settings) error {
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return fmt.Errorf("base URL must be an http or https URL")
 	}
+	if current.ConsoleURL != "" {
+		parsedConsole, err := url.Parse(current.ConsoleURL)
+		if err != nil || parsedConsole.Host == "" || (parsedConsole.Scheme != "http" && parsedConsole.Scheme != "https") {
+			return fmt.Errorf("console URL must be an http or https URL, or empty")
+		}
+	}
 	if current.LogRetention < 10 || current.LogRetention > 5000 {
 		return fmt.Errorf("log retention must be between 10 and 5000")
 	}
@@ -262,6 +296,9 @@ func validateRuntimeSettings(current settings) error {
 	}
 	if current.CooldownSeconds < 0 || current.CooldownSeconds > 3600 {
 		return fmt.Errorf("cooldown seconds must be between 0 and 3600")
+	}
+	if current.QuotaRefreshSeconds < 10 || current.QuotaRefreshSeconds > 3600 {
+		return fmt.Errorf("quota refresh seconds must be between 10 and 3600")
 	}
 	return nil
 }

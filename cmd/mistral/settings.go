@@ -16,14 +16,17 @@ const (
 )
 
 type settings struct {
-	BaseURL           string
-	LogRetention      int
-	StreamIdleSeconds int
-	Failover          bool
-	IgnoreProxy       bool
-	CooldownSeconds   int
-	Credentials       []credential
-	Models            []modelAlias
+	BaseURL             string
+	ConsoleURL          string
+	LogRetention        int
+	StreamIdleSeconds   int
+	Failover            bool
+	IgnoreProxy         bool
+	CooldownSeconds     int
+	QuotaMonitoring     bool
+	QuotaRefreshSeconds int
+	Credentials         []credential
+	Models              []modelAlias
 }
 
 type credential struct {
@@ -79,6 +82,7 @@ func (s settings) configured() bool {
 func defaultSettings() settings {
 	return settings{
 		BaseURL:         defaultBaseURL,
+		ConsoleURL:      defaultConsoleURL,
 		LogRetention:    200,
 		Failover:        true,
 		CooldownSeconds: 60,
@@ -87,7 +91,9 @@ func defaultSettings() settings {
 		// whole before sending it, so minutes can pass with no output. The
 		// upstream Vibe client allows 300s of idle for the same reason; below
 		// that the guard would abort healthy generations.
-		StreamIdleSeconds: defaultStreamIdleSeconds,
+		StreamIdleSeconds:   defaultStreamIdleSeconds,
+		QuotaMonitoring:     true,
+		QuotaRefreshSeconds: 60,
 		Models: []modelAlias{
 			{Client: "deepseek-v4.1-flash", Upstream: "deepseek-v4-1-flash-1017"},
 			{Client: "glm-5.3", Upstream: "zai-glm-5-3"},
@@ -109,6 +115,9 @@ func parseSettings(configYAML []byte) settings {
 	if parsed.BaseURL != "" {
 		current.BaseURL = strings.TrimRight(parsed.BaseURL, "/")
 	}
+	if parsed.ConsoleURL != nil {
+		current.ConsoleURL = strings.TrimRight(*parsed.ConsoleURL, "/")
+	}
 	if parsed.LogRetention > 0 {
 		current.LogRetention = parsed.LogRetention
 	}
@@ -127,6 +136,12 @@ func parseSettings(configYAML []byte) settings {
 	if parsed.CooldownSeconds != nil {
 		current.CooldownSeconds = clampInt(*parsed.CooldownSeconds, 0, 3600)
 	}
+	if parsed.QuotaMonitoring != nil {
+		current.QuotaMonitoring = *parsed.QuotaMonitoring
+	}
+	if parsed.QuotaRefreshSeconds != nil {
+		current.QuotaRefreshSeconds = clampInt(*parsed.QuotaRefreshSeconds, 10, 3600)
+	}
 	if len(parsed.Models) > 0 {
 		current.Models = parsed.Models
 	}
@@ -139,15 +154,18 @@ func parseSettings(configYAML []byte) settings {
 }
 
 type parsedSettings struct {
-	BaseURL           string
-	APIKey            string
-	LogRetention      int
-	StreamIdleSeconds *int
-	Failover          *bool
-	IgnoreProxy       *bool
-	CooldownSeconds   *int
-	Credentials       []credential
-	Models            []modelAlias
+	BaseURL             string
+	ConsoleURL          *string
+	APIKey              string
+	LogRetention        int
+	StreamIdleSeconds   *int
+	Failover            *bool
+	IgnoreProxy         *bool
+	CooldownSeconds     *int
+	QuotaMonitoring     *bool
+	QuotaRefreshSeconds *int
+	Credentials         []credential
+	Models              []modelAlias
 }
 
 func parseSettingsText(text string) parsedSettings {
@@ -261,6 +279,9 @@ func parseSettingsText(text string) parsedSettings {
 			model.Reasoning = value
 		case name == "base-url" || name == "base_url":
 			out.BaseURL = value
+		case name == "console-url" || name == "console_url":
+			console := value
+			out.ConsoleURL = &console
 		case name == "api-key" || name == "api_key":
 			out.APIKey = value
 		case name == "log-retention":
@@ -280,6 +301,13 @@ func parseSettingsText(text string) parsedSettings {
 			var seconds int
 			fmt.Sscanf(value, "%d", &seconds)
 			out.CooldownSeconds = &seconds
+		case name == "quota-monitoring" || name == "quota_monitoring":
+			enabled := value == "true" || value == "1" || value == "yes" || value == "on"
+			out.QuotaMonitoring = &enabled
+		case name == "quota-refresh-seconds" || name == "quota_refresh_seconds":
+			var seconds int
+			fmt.Sscanf(value, "%d", &seconds)
+			out.QuotaRefreshSeconds = &seconds
 		}
 	}
 	if inCred {
@@ -361,11 +389,14 @@ func renderPluginBlock(s settings) string {
 	buf.WriteString("      enabled: true\n")
 	buf.WriteString("      priority: 100\n")
 	fmt.Fprintf(&buf, "      base-url: %s\n", quoteYAML(s.BaseURL))
+	fmt.Fprintf(&buf, "      console-url: %s\n", quoteYAML(s.ConsoleURL))
 	fmt.Fprintf(&buf, "      log-retention: %d\n", s.LogRetention)
 	fmt.Fprintf(&buf, "      stream-idle-seconds: %d\n", s.StreamIdleSeconds)
 	fmt.Fprintf(&buf, "      failover: %t\n", s.Failover)
 	fmt.Fprintf(&buf, "      ignore-proxy: %t\n", s.IgnoreProxy)
 	fmt.Fprintf(&buf, "      cooldown-seconds: %d\n", s.CooldownSeconds)
+	fmt.Fprintf(&buf, "      quota-monitoring: %t\n", s.QuotaMonitoring)
+	fmt.Fprintf(&buf, "      quota-refresh-seconds: %d\n", s.QuotaRefreshSeconds)
 	buf.WriteString("      credentials:\n")
 	for _, item := range s.Credentials {
 		fmt.Fprintf(&buf, "        - id: %s\n", quoteYAML(item.ID))

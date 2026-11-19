@@ -25,6 +25,7 @@
 - 稳定下发 `prompt_cache_key`，并同步到 `x-affinity` 头，让 Mistral 的负载均衡把同一会话固定到已缓存该前缀的节点。客户端带了 key 就用客户端的，否则按会话内容根（system 指令 + 首条用户消息）生成，同一会话的后续轮次和压缩重放都能命中同一个节点。
 - 流式请求长时间没有新字节时自动截断，避免客户端一直挂着。
 - 可选忽略 CPA 的全局代理；宿主 HTTP 桥没有直连开关时，插件可以自己直连上游。
+- 读取 Mistral 账单接口（`/billing/subscription` 和 `/billing/budget`）里的月度额度，在控制台显示 API 额度和 Vibe Code 额度；某一类额度用尽时自动绕开这把 key，到重置日期后自动恢复。
 - 控制台支持中文和英文，首次加载跟随 CPA 的语言，也可以手动切换。
 
 ## 安装
@@ -72,11 +73,14 @@ plugins:
       enabled: true
       priority: 100
       base-url: "https://api.mistral.ai/v1"
+      console-url: "https://console.mistral.ai"
       log-retention: 200
       stream-idle-seconds: 0
       failover: true
       ignore-proxy: false
       cooldown-seconds: 60
+      quota-monitoring: true
+      quota-refresh-seconds: 60
       credentials:
         - id: "primary"
           label: "主凭据"
@@ -100,11 +104,14 @@ plugins:
 | 字段 | 说明 |
 | --- | --- |
 | `base-url` | Mistral API 地址，带 `/v1`。默认 `https://api.mistral.ai/v1`。 |
+| `console-url` | 控制台地址，用来读 `/api/vibe/whoami` 判断 key 的计费额度。默认 `https://console.mistral.ai`。留空则不判断 key 类型，也不会自动停用。 |
 | `log-retention` | 保留多少条请求日志，范围 10 到 5000。 |
 | `stream-idle-seconds` | 流式空闲截断。0 关闭，大于 0 时上游超过这个秒数没有新字节就取消本次请求。 |
 | `failover` | 打开后，上游失败会按优先级尝试下一把凭据。关闭时只用当前排在最前的一把。 |
 | `ignore-proxy` | 打开后插件直连 Mistral，不走 CPA 的全局代理。默认关闭。 |
 | `cooldown-seconds` | 失败后的基础冷却秒数，范围 0 到 3600。0 表示不冷却，但仍然会按顺序切换。 |
+| `quota-monitoring` | 默认开启。读取套餐的月度额度，额度用尽时自动绕开这把凭据。 |
+| `quota-refresh-seconds` | 后台检查额度的间隔，范围 10 到 3600，默认 60 秒。 |
 | `credentials[].priority` | 数字越大越先用。 |
 | `credentials[].disabled` | 为 true 时不参与调度。 |
 | `models[].id` | 客户端看到的模型名。 |
@@ -162,6 +169,35 @@ Mistral 把思考内容放在 `delta.content` 数组里，元素形如 `{"type":
 「模型」里的「拉取上游模型」也用同一接口，把上游模型列出来。勾选后批量写入映射，已经存在的上游 ID 会标成「已添加」。客户端名称默认等于上游 ID，可以在表格里再改。
 
 「测试」会对单条映射发一个非流式请求，`max_tokens` 是 64，并带上这条映射的思考档位。测试结果只用于确认 key、模型 ID 和参数能通过，会计入 Mistral 账单。测试请求写进日志时带 `probe` 标记，不计入统计。
+
+## 额度监控
+
+插件读取 Vibe 官方客户端使用的同一组账单接口：
+
+```text
+GET {base-url}/billing/subscription
+GET {base-url}/billing/budget
+GET {console-url}/api/vibe/whoami
+```
+
+`/billing/subscription` 给出套餐名（`EDU`、`INDIVIDUAL`、`TEAM` 等）和是否开启按量计费。`/billing/budget` 返回两份包月额度：
+
+- `api_budget`：普通 API 和 Studio 的用量。
+- `vibe_budget`：Vibe Code 的用量。
+
+用哪一份额度不取决于模型名，而取决于 key 的类型：Mistral 把计费额度绑在 key 的 scope 上。Vibe 类型的 key（`/whoami` 里 `plan_type` 是 `CHAT` 或 `MISTRAL_CODE`）所有请求都计入 Vibe Code 额度，普通 chat 模型也一样；Studio API 类型的 key（`plan_type` 是 `API`）所有请求都计入 API 额度。插件用同一把 key 请求 `/api/vibe/whoami` 来确认 scope。
+
+两份额度按凭据缓存在本地：「凭据」页显示已用 / 总额、进度条、套餐名、key 类型和重置时间，「概览」页显示紧凑的摘要；当前 key 计费的那一份会标出来。页面每 30 秒用缓存重绘一次，后台按 `quota-refresh-seconds` 读取账单，「刷新额度」按钮会立即读一次。
+
+当这把 key 计费的那份额度达到 100%、且没有开启按量计费时，整把凭据会被移出调度。停用是整把 key，不按模型分：key 不能把流量换到另一份额度上。插件不会把自动停用写回 CPA 配置，手动停用仍然是手动停用，自动停用只是根据最近一次账单读数推导出来的。过了 `reset_at` 之后凭据自动重新可用，下一次后台检查确认新的额度。判断不出 key 类型时（whoami 请求失败，或两份额度都存在但没有 scope），插件继续使用这把 key；只有一份额度存在时按那一份处理。账单读取失败、或 key 没有权限查看账单时，插件不会停用任何东西。
+
+最近一次读数和额度状态缓存在：
+
+```text
+/CLIProxyAPI/plugin-data/mistral/quota.json
+```
+
+CPA 重启后先按上一次的数字显示。后台检查不依赖管理页会话，所以是直连；控制台刷新走宿主 HTTP 桥，和普通请求一样遵循 `ignore-proxy`。如果部署环境只能在 CPA 的代理下访问 Mistral，后台自动检查会失败，但客户端请求和控制台触发的刷新仍会更新额度并完成自动停用/恢复。
 
 ## 请求日志与统计
 

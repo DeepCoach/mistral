@@ -143,6 +143,7 @@ func handleMethod(method string, request []byte) []byte {
 		var life lifecycleRequest
 		_ = json.Unmarshal(request, &life)
 		storeSettings(parseSettings(life.ConfigYAML))
+		startQuotaMonitor()
 		return registrationJSON()
 	case "model.register", "model.static", "model.for_auth":
 		return modelsJSON()
@@ -191,6 +192,7 @@ func registrationJSON() []byte {
 			"GitHubRepository": "https://github.com/kaecho/mistral",
 			"ConfigFields": []map[string]string{
 				{"Name": "base-url", "Type": "string", "Description": "Mistral API base URL, including /v1."},
+				{"Name": "console-url", "Type": "string", "Description": "Mistral console origin used to read the key scope (/api/vibe/whoami). Empty disables scope detection."},
 				{"Name": "api-key", "Type": "string", "Description": "Mistral API key."},
 				{"Name": "models", "Type": "string", "Description": "Client model names, optionally client=upstream."},
 				{"Name": "log-retention", "Type": "number", "Description": "Number of request log entries to keep."},
@@ -198,6 +200,8 @@ func registrationJSON() []byte {
 				{"Name": "failover", "Type": "bool", "Description": "Try the next credential when the upstream rejects the current one."},
 				{"Name": "ignore-proxy", "Type": "bool", "Description": "Dial Mistral directly instead of through the proxy the host configures."},
 				{"Name": "cooldown-seconds", "Type": "number", "Description": "Base cooldown after a credential failure."},
+				{"Name": "quota-monitoring", "Type": "bool", "Description": "Read the included monthly allowance per credential and route around keys whose allowance is spent."},
+				{"Name": "quota-refresh-seconds", "Type": "number", "Description": "How often the background quota check runs. 10 to 3600 seconds."},
 			},
 		},
 		"capabilities": map[string]any{
@@ -281,8 +285,16 @@ func execute(request []byte, stream bool) []byte {
 	if !current.configured() {
 		return errorEnvelope("not_configured", "add a Mistral credential and a model mapping in the Mistral console", http.StatusBadRequest)
 	}
-	candidates := current.candidates()
+	upstream, reasoning := current.upstream(req.Model)
+	// Quota is a property of the key, not of the model: the billing category
+	// follows the key scope, so exhausted credentials drop out here before they
+	// are ranked or attempted.
+	available := current.candidates()
+	candidates := current.availableCandidates()
 	if len(candidates) == 0 {
+		if len(available) > 0 {
+			return quotaExhaustedEnvelope(current)
+		}
 		return errorEnvelope("not_configured", "add a Mistral credential with an API key in the Mistral console", http.StatusBadRequest)
 	}
 	if !current.Failover {
@@ -291,7 +303,6 @@ func execute(request []byte, stream bool) []byte {
 	if len(candidates) > maxFailoverAttempts {
 		candidates = candidates[:maxFailoverAttempts]
 	}
-	upstream, reasoning := current.upstream(req.Model)
 	payload, ok := toMistralChat(req.Payload, req.OriginalRequest, req.SourceFormat, upstream, stream)
 	if !ok {
 		return errorEnvelope("bad_request", "unsupported request body", http.StatusBadRequest)
@@ -375,6 +386,14 @@ func execute(request []byte, stream bool) []byte {
 			if !transientUpstreamStatus(lastStatus) {
 				break
 			}
+		}
+		if lastStatus == http.StatusPaymentRequired && current.QuotaMonitoring {
+			// 402 is Mistral refusing to spend past an included allowance.
+			// Mark the key and let the background check read billing: doing
+			// three network reads here would stall the request on a slow
+			// billing host.
+			markQuotaSuspect(cred.ID)
+			wakeQuotaMonitor()
 		}
 		if retryableStatus(lastStatus) {
 			recordCredentialFailure(cred.ID, lastStatus, lastErr)

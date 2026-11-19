@@ -60,6 +60,25 @@ func (s settings) candidates() []credential {
 	return append(healthy, cooling...)
 }
 
+// availableCandidates keeps only credentials whose monthly allowance is not
+// exhausted. The billing snapshot is advisory: unknown scopes, unknown keys and
+// errored snapshots leave the credential in the list, so a billing outage can
+// never take the provider offline.
+func (s settings) availableCandidates() []credential {
+	items := s.candidates()
+	if !s.QuotaMonitoring {
+		return items
+	}
+	filtered := make([]credential, 0, len(items))
+	for _, item := range items {
+		if quotaExhaustedFor(s, item.ID) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered
+}
+
 func sortCredentials(items []credential) {
 	sort.SliceStable(items, func(i, j int) bool {
 		return items[i].Priority > items[j].Priority

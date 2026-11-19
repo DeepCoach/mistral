@@ -1,3 +1,3 @@
 package main
 
-const pluginVersion = "0.4.5"
+const pluginVersion = "0.5.0"

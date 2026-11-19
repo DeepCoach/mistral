@@ -25,6 +25,7 @@ Connect Mistral to CLIProxyAPI (CPA). Clients keep using CPA's address and key.
 - Maintains a stable `prompt_cache_key` and mirrors it in the `x-affinity` header so Mistral's load balancer keeps one conversation on the cache node that already holds its prefix. The key comes from the client when present, otherwise from the conversation root (instructions plus first user message), so turns and compaction replays of the same history keep hitting the same node.
 - Cancels streaming requests that stop producing bytes for too long.
 - Optionally ignores CPA's global proxy when the host transport cannot reach the upstream directly.
+- Reads the included monthly allowance per credential from Mistral's billing API (`/billing/subscription` and `/billing/budget`), shows API and Vibe Code usage in the console, routes around a credential when its allowance is spent, and brings it back automatically at the reset date.
 - Runs the console in English or Chinese, follows the CPA language on first load, and keeps a manual language switch.
 
 ## Install
@@ -72,11 +73,14 @@ plugins:
       enabled: true
       priority: 100
       base-url: "https://api.mistral.ai/v1"
+      console-url: "https://console.mistral.ai"
       log-retention: 200
       stream-idle-seconds: 0
       failover: true
       ignore-proxy: false
       cooldown-seconds: 60
+      quota-monitoring: true
+      quota-refresh-seconds: 60
       credentials:
         - id: "primary"
           label: "Primary"
@@ -100,11 +104,14 @@ plugins:
 | Field | Meaning |
 | --- | --- |
 | `base-url` | Mistral API base URL, including `/v1`. Defaults to `https://api.mistral.ai/v1`. |
+| `console-url` | Console origin used to read the key scope from `/api/vibe/whoami`. Defaults to `https://console.mistral.ai`. Empty disables scope detection, so nothing is paused automatically. |
 | `log-retention` | Number of request log entries to keep, from 10 to 5000. |
 | `stream-idle-seconds` | Stream idle cutoff. 0 disables it. Above 0, an upstream request is cancelled after this many seconds without new bytes. |
 | `failover` | When enabled, a failed upstream attempt moves to the next credential by priority. When disabled, only the first credential in the current order is used. |
 | `ignore-proxy` | When enabled, the plugin connects to Mistral directly and bypasses CPA's global proxy. Off by default. |
 | `cooldown-seconds` | Base cooldown after a failure, from 0 to 3600. 0 disables cooldown, but failover still moves through the list. |
+| `quota-monitoring` | When enabled (default), the plugin reads the plan allowance per credential and routes around a key whose allowance is spent. |
+| `quota-refresh-seconds` | Background allowance check interval, from 10 to 3600. Defaults to 60. |
 | `credentials[].priority` | Higher numbers are tried first. |
 | `credentials[].disabled` | When true, the credential is not scheduled. |
 | `models[].id` | Model name exposed to clients. |
@@ -162,6 +169,35 @@ Check under Credentials calls `GET /models`, confirms the key works, and reports
 Fetch upstream models under Models uses the same endpoint and lists the upstream catalog. Select models and add them in one batch. Upstream IDs that already have a mapping are marked as added. The client name defaults to the upstream ID and can be changed later.
 
 Test sends a non-streaming request for one mapping with `max_tokens: 64` and the mapping's reasoning setting. It checks the key, model ID, and parameters together and counts toward your Mistral bill. Test requests are logged with a `probe` flag and excluded from statistics.
+
+## Quota monitoring
+
+The plugin reads the same billing endpoints the official Vibe client uses:
+
+```text
+GET {base-url}/billing/subscription
+GET {base-url}/billing/budget
+GET {console-url}/api/vibe/whoami
+```
+
+`/billing/subscription` names the plan (`EDU`, `INDIVIDUAL`, `TEAM`, ...) and whether pay-as-you-go is on. `/billing/budget` returns the two included monthly allowances:
+
+- `api_budget`: ordinary API and Studio spend.
+- `vibe_budget`: Vibe Code spend.
+
+Which one a key uses is not a property of the model: Mistral ties the billing category to the key scope. A Vibe-scope key (`plan_type` `CHAT` or `MISTRAL_CODE` in `/whoami`) charges the Vibe Code allowance for every request, including normal chat models; a Studio API-scope key (`plan_type` `API`) charges the API allowance. The plugin reads `/api/vibe/whoami` with the same key to learn that scope.
+
+Both allowances are stored per credential and shown under Credentials (used / included, a progress bar, the plan name, the key scope, and the reset time) and as a compact summary on Overview. The applicable allowance is marked. The page repaints from the cached figures every 30 seconds, the background check refreshes billing on `quota-refresh-seconds`, and the Refresh allowance buttons read billing immediately.
+
+A credential is taken out of rotation when its applicable allowance reaches 100% and pay-as-you-go is off. This pauses the whole key, not one model category, because the key cannot move its traffic to the other allowance. Nothing is written to the CPA config: a manual disable stays manual, and the automatic pause is derived from the last billing read. Once `reset_at` passes, the credential is eligible again and the next background check confirms the new allowance. When the scope cannot be determined (whoami unreachable, or both allowances present with no scope), the plugin keeps serving; if only one allowance is present it falls back to that one. A billing read failure or a key without permission to see billing never disables anything.
+
+The working state and the last read per credential are cached in:
+
+```text
+/CLIProxyAPI/plugin-data/mistral/quota.json
+```
+
+so a CPA restart starts from the previous figures. Background checks do not use the management session, so they connect directly; the console refresh uses the host bridge and follows `ignore-proxy` like every other plugin call. If the deployment cannot reach Mistral without CPA's proxy, the automatic part still runs whenever a client request or the console triggers a refresh.
 
 ## Request logs and statistics
 
