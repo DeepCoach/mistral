@@ -74,8 +74,9 @@ plugins:
       priority: 100
       base-url: "https://api.mistral.ai/v1"
       console-url: "https://console.mistral.ai"
+      # config-path: "/CLIProxyAPI/config.yaml"
       log-retention: 200
-      stream-idle-seconds: 0
+      stream-idle-seconds: 300
       failover: true
       ignore-proxy: false
       cooldown-seconds: 60
@@ -105,8 +106,9 @@ plugins:
 | --- | --- |
 | `base-url` | Mistral API 地址，带 `/v1`。默认 `https://api.mistral.ai/v1`。 |
 | `console-url` | 控制台地址，用来读 `/api/vibe/whoami` 判断 key 的计费额度。默认 `https://console.mistral.ai`。留空则不判断 key 类型，也不会自动停用。 |
+| `config-path` | 要写回的 CPA `config.yaml`。留空时依次查找 `CPA_MISTRAL_CONFIG_PATH`、`/CLIProxyAPI/config.yaml`、运行中 CPA 可执行文件所在目录下的 `config.yaml`、工作目录下的 `config.yaml`。显式指定的路径必须已存在。 |
 | `log-retention` | 保留多少条请求日志，范围 10 到 5000。 |
-| `stream-idle-seconds` | 流式空闲截断。0 关闭，大于 0 时上游超过这个秒数没有新字节就取消本次请求。 |
+| `stream-idle-seconds` | 流式空闲截断。默认 300。0 关闭，大于 0 时上游超过这个秒数没有新字节就取消本次请求。 |
 | `failover` | 打开后，上游失败会按优先级尝试下一把凭据。关闭时只用当前排在最前的一把。 |
 | `ignore-proxy` | 打开后插件直连 Mistral，不走 CPA 的全局代理。默认关闭。 |
 | `cooldown-seconds` | 失败后的基础冷却秒数，范围 0 到 3600。0 表示不冷却，但仍然会按顺序切换。 |
@@ -215,21 +217,21 @@ CPA 重启后先按上一次的数字显示。后台检查不依赖管理页会�
 
 `stream-idle-seconds` 大于 0 时，插件会打开一个可取消的上游操作，并每秒检查最近一次收到字节的时间。超过阈值没有新字节就取消上游请求，同时关闭下游流。
 
-`max` 档位的第一包经常超过 20 秒，这个值不要设得太小。0 表示关闭，默认就是关闭。
+`max` 档位的第一包经常超过 20 秒，这个值不要设得太小。0 表示关闭，默认 300 秒。
 
 ## 从源码构建
 
-需要 Go 1.26 和 C 编译器。Linux amd64 可以用仓库里的 Dockerfile：
+需要 Go 1.26 和 C 编译器。`scripts/build-linux.ps1` 和 `scripts/build-windows.ps1` 会读取 `internal/plugin/register.go` 里的 `pluginVersion`，产物是 `dist/<os>/<arch>/mistral-v<version>.so`（Windows 为 `.dll`），并打包成 `dist/mistral-v<version>-<os>-<arch>.zip`。Linux amd64 也可以用仓库里的 Dockerfile：
 
 ```bash
 docker build --platform linux/amd64 -f Dockerfile.build --output type=local,dest=dist .
 ```
 
-产物是 `dist/mistral.so`。其他平台的构建方式见 [发布工作流](.github/workflows/release.yml)。
+其他平台的构建方式见 [发布工作流](.github/workflows/release.yml)。
 
 ## 发布
 
-版本以 `marketplace/registry.json` 的 `plugins[0].version` 为准，必须等于 `cmd/mistral/version.go` 里的 `pluginVersion`。
+版本以 `internal/plugin/register.go` 的 `pluginVersion` 为唯一事实源；`marketplace/registry.json` 的 `plugins[0].version` 必须与它一致，CI 会比对两者。
 
 推送 `v` 加这个版本的 tag，例如 `v0.3.0`，Actions 会：
 

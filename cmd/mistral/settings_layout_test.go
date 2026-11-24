@@ -236,6 +236,96 @@ func TestResolveConfigPathMissing(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigCandidatesOrder(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		defaultConfigPath,
+		filepath.Join(filepath.Dir(executable), "config.yaml"),
+		filepath.Join(workingDir, "config.yaml"),
+	}
+	got := defaultConfigCandidates()
+	if len(got) != len(want) {
+		t.Fatalf("candidates = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("candidates = %q, want %q", got, want)
+		}
+	}
+}
+
+// stubConfigCandidates replaces the default candidate list for one test.
+func stubConfigCandidates(t *testing.T, candidates []string) {
+	t.Helper()
+	restore := resolveConfigCandidates
+	t.Cleanup(func() { resolveConfigCandidates = restore })
+	resolveConfigCandidates = func() []string { return candidates }
+	t.Setenv(configPathEnv, "")
+}
+
+func writeConfigFile(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("plugins:\n  configs:\n    mistral:\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestResolveConfigPathFallsBackThroughDefaults(t *testing.T) {
+	dir := t.TempDir()
+	candidates := []string{
+		filepath.Join(dir, "CLIProxyAPI", "config.yaml"),
+		filepath.Join(dir, "bin", "config.yaml"),
+		filepath.Join(dir, "work", "config.yaml"),
+	}
+	stubConfigCandidates(t, candidates)
+
+	writeConfigFile(t, candidates[2])
+	if got, err := resolveConfigPath(""); err != nil || got != candidates[2] {
+		t.Fatalf("working dir only = %q err=%v, want %q", got, err, candidates[2])
+	}
+	writeConfigFile(t, candidates[1])
+	if got, err := resolveConfigPath(""); err != nil || got != candidates[1] {
+		t.Fatalf("executable dir = %q err=%v, want %q", got, err, candidates[1])
+	}
+	writeConfigFile(t, candidates[0])
+	if got, err := resolveConfigPath(""); err != nil || got != candidates[0] {
+		t.Fatalf("container path = %q err=%v, want %q", got, err, candidates[0])
+	}
+}
+
+func TestResolveConfigPathReportsTriedCandidates(t *testing.T) {
+	dir := t.TempDir()
+	candidates := []string{
+		filepath.Join(dir, "CLIProxyAPI", "config.yaml"),
+		filepath.Join(dir, "bin", "config.yaml"),
+		filepath.Join(dir, "work", "config.yaml"),
+	}
+	stubConfigCandidates(t, candidates)
+
+	_, err := resolveConfigPath("")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	for _, candidate := range candidates {
+		if !strings.Contains(err.Error(), candidate) {
+			t.Fatalf("error %q does not list %q", err, candidate)
+		}
+		if _, statErr := os.Stat(candidate); !os.IsNotExist(statErr) {
+			t.Fatalf("resolveConfigPath created %s", candidate)
+		}
+	}
+}
+
 func TestPersistSettingsUsesExplicitPathOverEnv(t *testing.T) {
 	dir := t.TempDir()
 	explicit := filepath.Join(dir, "explicit.yaml")

@@ -233,13 +233,13 @@ The first packet for the `max` setting often takes more than 20 seconds. Do not 
 
 ## Build from source
 
-You need Go 1.26 and a C compiler. Linux amd64 can use the repository's Dockerfile:
+You need Go 1.26 and a C compiler. `scripts/build-linux.ps1` and `scripts/build-windows.ps1` read `pluginVersion` from `internal/plugin/register.go` and write `dist/<os>/<arch>/mistral-v<version>.so` (`.dll` on Windows), packaged as `dist/mistral-v<version>-<os>-<arch>.zip`. Linux amd64 can use the repository's Dockerfile instead:
 
 ```bash
 docker build --platform linux/amd64 -f Dockerfile.build --output type=local,dest=dist .
 ```
 
-The result is `dist/mistral.so`. Other platforms are built by the [release workflow](.github/workflows/release.yml).
+Other platforms are built by the [release workflow](.github/workflows/release.yml).
 
 ## Release
 

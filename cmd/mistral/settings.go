@@ -606,6 +606,23 @@ func indentWidth(line string) int {
 	return width
 }
 
+// resolveConfigCandidates returns the files tried when no path is configured,
+// in order: the container path, config.yaml beside the running CPA executable,
+// then config.yaml in the working directory. It is a variable so tests can
+// supply their own list instead of creating these paths.
+var resolveConfigCandidates = defaultConfigCandidates
+
+func defaultConfigCandidates() []string {
+	candidates := []string{defaultConfigPath}
+	if executable, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(executable), "config.yaml"))
+	}
+	if workingDir, err := os.Getwd(); err == nil {
+		candidates = append(candidates, filepath.Join(workingDir, "config.yaml"))
+	}
+	return candidates
+}
+
 // resolveConfigPath picks the config file to read and write. An explicit
 // config-path or CPA_MISTRAL_CONFIG_PATH pointing at a missing file is an
 // error, not a cue to create one.
@@ -623,13 +640,7 @@ func resolveConfigPath(explicit string) (string, error) {
 		}
 		return env, nil
 	}
-	candidates := []string{defaultConfigPath}
-	if executable, err := os.Executable(); err == nil {
-		candidates = append(candidates, filepath.Join(filepath.Dir(executable), "config.yaml"))
-	}
-	if workingDir, err := os.Getwd(); err == nil {
-		candidates = append(candidates, filepath.Join(workingDir, "config.yaml"))
-	}
+	candidates := resolveConfigCandidates()
 	for _, candidate := range candidates {
 		if isConfigFile(candidate) {
 			return candidate, nil

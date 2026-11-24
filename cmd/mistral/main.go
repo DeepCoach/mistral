@@ -193,7 +193,7 @@ func registrationJSON() []byte {
 			"ConfigFields": []map[string]string{
 				{"Name": "base-url", "Type": "string", "Description": "Mistral API base URL, including /v1."},
 				{"Name": "console-url", "Type": "string", "Description": "Mistral console origin used to read the key scope (/api/vibe/whoami). Empty disables scope detection."},
-				{"Name": "config-path", "Type": "string", "Description": "Path to the CPA config.yaml to update. Defaults to CPA_MISTRAL_CONFIG_PATH, then /CLIProxyAPI/config.yaml, then config.yaml beside the library, then config.yaml in the working directory."},
+				{"Name": "config-path", "Type": "string", "Description": "Path to the CPA config.yaml to update. Defaults to CPA_MISTRAL_CONFIG_PATH, then /CLIProxyAPI/config.yaml, then config.yaml in the directory of the running CPA executable, then config.yaml in the working directory."},
 				{"Name": "api-key", "Type": "string", "Description": "Mistral API key."},
 				{"Name": "models", "Type": "string", "Description": "Client model names, optionally client=upstream."},
 				{"Name": "log-retention", "Type": "number", "Description": "Number of request log entries to keep."},
