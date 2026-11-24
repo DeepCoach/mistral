@@ -1,3 +1,5 @@
 package main
 
-const pluginVersion = "0.5.0"
+import "github.com/kaecho/mistral/internal/plugin"
+
+var pluginVersion = plugin.Version()

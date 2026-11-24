@@ -2,13 +2,16 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
 const (
-	defaultBaseURL  = "https://api.mistral.ai/v1"
-	configPath      = "/CLIProxyAPI/config.yaml"
-	pluginConfigKey = "mistral"
+	defaultBaseURL    = "https://api.mistral.ai/v1"
+	defaultConfigPath = "/CLIProxyAPI/config.yaml"
+	configPathEnv     = "CPA_MISTRAL_CONFIG_PATH"
+	pluginConfigKey   = "mistral"
 	// defaultStreamIdleSeconds is how long a started stream may stay silent
 	// before it is treated as stalled. It matches the upstream Vibe client's
 	// 300s idle limit.
@@ -18,6 +21,7 @@ const (
 type settings struct {
 	BaseURL             string
 	ConsoleURL          string
+	ConfigPath          string
 	LogRetention        int
 	StreamIdleSeconds   int
 	Failover            bool
@@ -118,6 +122,9 @@ func parseSettings(configYAML []byte) settings {
 	if parsed.ConsoleURL != nil {
 		current.ConsoleURL = strings.TrimRight(*parsed.ConsoleURL, "/")
 	}
+	if parsed.ConfigPath != "" {
+		current.ConfigPath = parsed.ConfigPath
+	}
 	if parsed.LogRetention > 0 {
 		current.LogRetention = parsed.LogRetention
 	}
@@ -156,6 +163,7 @@ func parseSettings(configYAML []byte) settings {
 type parsedSettings struct {
 	BaseURL             string
 	ConsoleURL          *string
+	ConfigPath          string
 	APIKey              string
 	LogRetention        int
 	StreamIdleSeconds   *int
@@ -282,6 +290,8 @@ func parseSettingsText(text string) parsedSettings {
 		case name == "console-url" || name == "console_url":
 			console := value
 			out.ConsoleURL = &console
+		case name == "config-path" || name == "config_path":
+			out.ConfigPath = value
 		case name == "api-key" || name == "api_key":
 			out.APIKey = value
 		case name == "log-retention":
@@ -347,13 +357,44 @@ func splitYAML(line string) (string, string, bool) {
 func unquote(value string) string {
 	if len(value) >= 2 {
 		if value[0] == '"' && value[len(value)-1] == '"' {
-			return strings.ReplaceAll(value[1:len(value)-1], `\"`, `"`)
+			return unescapeDoubleQuoted(value[1 : len(value)-1])
 		}
 		if value[0] == '\'' && value[len(value)-1] == '\'' {
 			return value[1 : len(value)-1]
 		}
 	}
 	return value
+}
+
+// unescapeDoubleQuoted decodes the escape sequences quoteYAML emits. Anything
+// else (a Windows path separator, for instance) stays as written, so a quoted
+// path survives a write/read cycle.
+func unescapeDoubleQuoted(value string) string {
+	var builder strings.Builder
+	builder.Grow(len(value))
+	for i := 0; i < len(value); i++ {
+		if value[i] != '\\' || i+1 >= len(value) {
+			builder.WriteByte(value[i])
+			continue
+		}
+		switch value[i+1] {
+		case '\\':
+			builder.WriteByte('\\')
+		case '"':
+			builder.WriteByte('"')
+		case 'n':
+			builder.WriteByte('\n')
+		case 'r':
+			builder.WriteByte('\r')
+		case 't':
+			builder.WriteByte('\t')
+		default:
+			builder.WriteByte('\\')
+			builder.WriteByte(value[i+1])
+		}
+		i++
+	}
+	return builder.String()
 }
 
 // quoteYAML writes a double-quoted YAML scalar. Backslash is escaped first:
@@ -383,60 +424,57 @@ func quoteYAML(value string) string {
 	return builder.String()
 }
 
-func renderPluginBlock(s settings) string {
+// renderPluginBlock writes the plugin block using the indentation of the key
+// it replaces. Children sit two columns deeper, list items four and their
+// fields six, so 2-, 4- and 8-space documents keep their own style.
+func renderPluginBlock(s settings, indent int) string {
+	keyIndent := strings.Repeat(" ", indent)
+	childIndent := strings.Repeat(" ", indent+2)
+	itemIndent := strings.Repeat(" ", indent+4)
+	fieldIndent := strings.Repeat(" ", indent+6)
 	var buf strings.Builder
-	fmt.Fprintf(&buf, "    %s:\n", pluginConfigKey)
-	buf.WriteString("      enabled: true\n")
-	buf.WriteString("      priority: 100\n")
-	fmt.Fprintf(&buf, "      base-url: %s\n", quoteYAML(s.BaseURL))
-	fmt.Fprintf(&buf, "      console-url: %s\n", quoteYAML(s.ConsoleURL))
-	fmt.Fprintf(&buf, "      log-retention: %d\n", s.LogRetention)
-	fmt.Fprintf(&buf, "      stream-idle-seconds: %d\n", s.StreamIdleSeconds)
-	fmt.Fprintf(&buf, "      failover: %t\n", s.Failover)
-	fmt.Fprintf(&buf, "      ignore-proxy: %t\n", s.IgnoreProxy)
-	fmt.Fprintf(&buf, "      cooldown-seconds: %d\n", s.CooldownSeconds)
-	fmt.Fprintf(&buf, "      quota-monitoring: %t\n", s.QuotaMonitoring)
-	fmt.Fprintf(&buf, "      quota-refresh-seconds: %d\n", s.QuotaRefreshSeconds)
-	buf.WriteString("      credentials:\n")
-	for _, item := range s.Credentials {
-		fmt.Fprintf(&buf, "        - id: %s\n", quoteYAML(item.ID))
-		fmt.Fprintf(&buf, "          label: %s\n", quoteYAML(item.Label))
-		fmt.Fprintf(&buf, "          api-key: %s\n", quoteYAML(item.APIKey))
-		fmt.Fprintf(&buf, "          disabled: %t\n", item.Disabled)
-		fmt.Fprintf(&buf, "          priority: %d\n", item.Priority)
+	fmt.Fprintf(&buf, "%s%s:\n", keyIndent, pluginConfigKey)
+	fmt.Fprintf(&buf, "%senabled: true\n", childIndent)
+	fmt.Fprintf(&buf, "%spriority: 100\n", childIndent)
+	fmt.Fprintf(&buf, "%sbase-url: %s\n", childIndent, quoteYAML(s.BaseURL))
+	fmt.Fprintf(&buf, "%sconsole-url: %s\n", childIndent, quoteYAML(s.ConsoleURL))
+	if s.ConfigPath != "" {
+		fmt.Fprintf(&buf, "%sconfig-path: %s\n", childIndent, quoteYAML(s.ConfigPath))
 	}
-	buf.WriteString("      models:\n")
+	fmt.Fprintf(&buf, "%slog-retention: %d\n", childIndent, s.LogRetention)
+	fmt.Fprintf(&buf, "%sstream-idle-seconds: %d\n", childIndent, s.StreamIdleSeconds)
+	fmt.Fprintf(&buf, "%sfailover: %t\n", childIndent, s.Failover)
+	fmt.Fprintf(&buf, "%signore-proxy: %t\n", childIndent, s.IgnoreProxy)
+	fmt.Fprintf(&buf, "%scooldown-seconds: %d\n", childIndent, s.CooldownSeconds)
+	fmt.Fprintf(&buf, "%squota-monitoring: %t\n", childIndent, s.QuotaMonitoring)
+	fmt.Fprintf(&buf, "%squota-refresh-seconds: %d\n", childIndent, s.QuotaRefreshSeconds)
+	fmt.Fprintf(&buf, "%scredentials:\n", childIndent)
+	for _, item := range s.Credentials {
+		fmt.Fprintf(&buf, "%s- id: %s\n", itemIndent, quoteYAML(item.ID))
+		fmt.Fprintf(&buf, "%slabel: %s\n", fieldIndent, quoteYAML(item.Label))
+		fmt.Fprintf(&buf, "%sapi-key: %s\n", fieldIndent, quoteYAML(item.APIKey))
+		fmt.Fprintf(&buf, "%sdisabled: %t\n", fieldIndent, item.Disabled)
+		fmt.Fprintf(&buf, "%spriority: %d\n", fieldIndent, item.Priority)
+	}
+	fmt.Fprintf(&buf, "%smodels:\n", childIndent)
 	for _, item := range s.Models {
-		fmt.Fprintf(&buf, "        - id: %s\n", quoteYAML(item.Client))
-		fmt.Fprintf(&buf, "          upstream-id: %s\n", quoteYAML(item.Upstream))
-		fmt.Fprintf(&buf, "          reasoning: %s\n", quoteYAML(item.Reasoning))
+		fmt.Fprintf(&buf, "%s- id: %s\n", itemIndent, quoteYAML(item.Client))
+		fmt.Fprintf(&buf, "%supstream-id: %s\n", fieldIndent, quoteYAML(item.Upstream))
+		fmt.Fprintf(&buf, "%sreasoning: %s\n", fieldIndent, quoteYAML(item.Reasoning))
 	}
 	return buf.String()
 }
 
-func replacePluginBlock(config, block string) (string, error) {
+// replacePluginBlock finds plugins -> configs -> mistral by indentation, then
+// rewrites just that block. A mistral key under another parent is not a match.
+func replacePluginBlock(config string, s settings) (string, error) {
 	lines := strings.Split(config, "\n")
-	start := -1
-	for i, line := range lines {
-		if strings.TrimSpace(line) == pluginConfigKey+":" && strings.HasPrefix(line, "    ") && !strings.HasPrefix(line, "     ") {
-			start = i
-			break
-		}
+	start, indent, err := locatePluginBlock(lines)
+	if err != nil {
+		return "", err
 	}
-	if start < 0 {
-		return "", fmt.Errorf("plugin config block %s was not found", pluginConfigKey)
-	}
-	end := len(lines)
-	for i := start + 1; i < len(lines); i++ {
-		line := lines[i]
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		if !strings.HasPrefix(line, "     ") {
-			end = i
-			break
-		}
-	}
+	end := blockEnd(lines, start, indent)
+	block := renderPluginBlock(s, indent)
 	var buf strings.Builder
 	buf.WriteString(strings.Join(lines[:start], "\n"))
 	if start > 0 {
@@ -451,6 +489,158 @@ func replacePluginBlock(config, block string) (string, error) {
 		}
 	}
 	return buf.String(), nil
+}
+
+func locatePluginBlock(lines []string) (int, int, error) {
+	pluginsIndex := -1
+	pluginsIndent := 0
+	for i, line := range lines {
+		if isBlankLine(line) || isCommentLine(line) {
+			continue
+		}
+		if name, ok := yamlKeyName(line); ok && name == "plugins" {
+			if indent := indentWidth(line); pluginsIndex < 0 || indent < pluginsIndent {
+				pluginsIndex = i
+				pluginsIndent = indent
+			}
+		}
+	}
+	if pluginsIndex < 0 {
+		return 0, 0, fmt.Errorf("plugin config block %s was not found", pluginConfigKey)
+	}
+	pluginsEnd := blockEnd(lines, pluginsIndex, pluginsIndent)
+	configsIndex, configsIndent, ok := directChildKey(lines, pluginsIndex+1, pluginsEnd, pluginsIndent, "configs")
+	if !ok {
+		return 0, 0, fmt.Errorf("plugin config block %s was not found", pluginConfigKey)
+	}
+	configsEnd := blockEnd(lines, configsIndex, configsIndent)
+	mistralIndex, mistralIndent, ok := directChildKey(lines, configsIndex+1, configsEnd, configsIndent, pluginConfigKey)
+	if !ok {
+		return 0, 0, fmt.Errorf("plugin config block %s was not found", pluginConfigKey)
+	}
+	return mistralIndex, mistralIndent, nil
+}
+
+// directChildKey returns the first key at the block's immediate child indent.
+// Deeper keys belong to a sibling's subtree and are ignored.
+func directChildKey(lines []string, start, end, parentIndent int, key string) (int, int, bool) {
+	childIndent := -1
+	for i := start; i < end; i++ {
+		line := lines[i]
+		if isBlankLine(line) || isCommentLine(line) {
+			continue
+		}
+		indent := indentWidth(line)
+		if indent <= parentIndent {
+			return 0, 0, false
+		}
+		if childIndent < 0 {
+			childIndent = indent
+		} else if indent < childIndent {
+			return 0, 0, false
+		}
+		if indent != childIndent {
+			continue
+		}
+		if name, ok := yamlKeyName(line); ok && name == key {
+			return i, indent, true
+		}
+	}
+	return 0, 0, false
+}
+
+// blockEnd returns the first non-empty line that is not deeper than the key.
+// Indentation and boundaries are read from the original line; only key
+// comparisons strip a BOM or a trailing comment.
+func blockEnd(lines []string, keyIndex, keyIndent int) int {
+	for i := keyIndex + 1; i < len(lines); i++ {
+		if isBlankLine(lines[i]) {
+			continue
+		}
+		if indentWidth(lines[i]) <= keyIndent {
+			return i
+		}
+	}
+	return len(lines)
+}
+
+func yamlKeyName(line string) (string, bool) {
+	line = strings.TrimSpace(stripYAMLComment(strings.TrimPrefix(line, "\ufeff")))
+	if line == "" || strings.HasPrefix(line, "#") {
+		return "", false
+	}
+	name, _, ok := strings.Cut(line, ":")
+	if !ok {
+		return "", false
+	}
+	return strings.TrimSpace(name), true
+}
+
+// stripYAMLComment removes a trailing comment. A '#' inside a value (no
+// whitespace before it) is kept.
+func stripYAMLComment(line string) string {
+	for i := 0; i < len(line); i++ {
+		if line[i] != '#' {
+			continue
+		}
+		if i == 0 || line[i-1] == ' ' || line[i-1] == '\t' {
+			return line[:i]
+		}
+	}
+	return line
+}
+
+func isCommentLine(line string) bool {
+	return strings.HasPrefix(strings.TrimSpace(strings.TrimPrefix(line, "\ufeff")), "#")
+}
+
+func isBlankLine(line string) bool {
+	return strings.TrimSpace(strings.TrimPrefix(line, "\ufeff")) == ""
+}
+
+func indentWidth(line string) int {
+	width := 0
+	for width < len(line) && (line[width] == ' ' || line[width] == '\t') {
+		width++
+	}
+	return width
+}
+
+// resolveConfigPath picks the config file to read and write. An explicit
+// config-path or CPA_MISTRAL_CONFIG_PATH pointing at a missing file is an
+// error, not a cue to create one.
+func resolveConfigPath(explicit string) (string, error) {
+	explicit = strings.TrimSpace(explicit)
+	if explicit != "" {
+		if !isConfigFile(explicit) {
+			return "", fmt.Errorf("config file %s does not exist", explicit)
+		}
+		return explicit, nil
+	}
+	if env := strings.TrimSpace(os.Getenv(configPathEnv)); env != "" {
+		if !isConfigFile(env) {
+			return "", fmt.Errorf("config file %s from %s does not exist", env, configPathEnv)
+		}
+		return env, nil
+	}
+	candidates := []string{defaultConfigPath}
+	if executable, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(executable), "config.yaml"))
+	}
+	if workingDir, err := os.Getwd(); err == nil {
+		candidates = append(candidates, filepath.Join(workingDir, "config.yaml"))
+	}
+	for _, candidate := range candidates {
+		if isConfigFile(candidate) {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("config file not found; tried %s", strings.Join(candidates, ", "))
+}
+
+func isConfigFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 func clampInt(value, low, high int) int {

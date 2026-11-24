@@ -403,7 +403,7 @@ func TestQuotaSettingsRoundTrip(t *testing.T) {
 	if !defaults.QuotaMonitoring || defaults.QuotaRefreshSeconds != 60 || defaults.ConsoleURL != defaultConsoleURL {
 		t.Fatalf("defaults = %t / %d / %q", defaults.QuotaMonitoring, defaults.QuotaRefreshSeconds, defaults.ConsoleURL)
 	}
-	rendered := renderPluginBlock(parsed)
+	rendered := renderPluginBlock(parsed, 4)
 	if !strings.Contains(rendered, "console-url:") || !strings.Contains(rendered, "quota-monitoring: false") || !strings.Contains(rendered, "quota-refresh-seconds: 120") {
 		t.Fatalf("render missing quota keys:\n%s", rendered)
 	}
@@ -413,7 +413,7 @@ func TestQuotaSettingsRoundTrip(t *testing.T) {
 	if empty.ConsoleURL != "" {
 		t.Fatalf("empty console url was replaced by %q", empty.ConsoleURL)
 	}
-	if emptyRendered := renderPluginBlock(empty); !strings.Contains(emptyRendered, "console-url: \"\"") {
+	if emptyRendered := renderPluginBlock(empty, 4); !strings.Contains(emptyRendered, "console-url: \"\"") {
 		t.Fatalf("empty console url not rendered:\n%s", emptyRendered)
 	}
 }
@@ -533,7 +533,7 @@ func TestExecuteQuotaExhaustedEnvelope(t *testing.T) {
 	resetQuotaState(t)
 	reset := time.Now().Add(48 * time.Hour)
 	storeSettings(settings{
-		BaseURL:             "http://127.0.0.1:1/v1",
+		BaseURL:             "https://x.example/v1",
 		QuotaMonitoring:     true,
 		QuotaRefreshSeconds: 60,
 		Credentials:         []credential{{ID: "key", Label: "key", APIKey: "k", Priority: 10}},

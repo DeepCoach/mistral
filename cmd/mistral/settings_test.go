@@ -18,11 +18,16 @@ func TestParseModelAlias(t *testing.T) {
 
 func TestReplacePluginBlock(t *testing.T) {
 	config := "plugins:\n  configs:\n    other:\n      enabled: false\n    mistral:\n      enabled: true\n      api-key: \"old\"\ncredential-concurrency:\n  cleanup-interval: 5s\n"
-	updated, err := replacePluginBlock(config, "    mistral:\n      enabled: true\n      api-key: \"new\"\n")
+	updated, err := replacePluginBlock(config, settings{
+		BaseURL: "https://api.mistral.ai/v1",
+		Credentials: []credential{
+			{ID: "primary", Label: "Primary", APIKey: "new", Priority: 10},
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !stringsContains(updated, "api-key: \"new\"") || !stringsContains(updated, "credential-concurrency:") || stringsContains(updated, "old") {
+	if !stringsContains(updated, "api-key: \"new\"") || !stringsContains(updated, "credential-concurrency:") || stringsContains(updated, "api-key: \"old\"") {
 		t.Fatalf("updated:\n%s", updated)
 	}
 }
@@ -72,7 +77,7 @@ func TestRenderPluginBlockIncludesIgnoreProxy(t *testing.T) {
 	block := renderPluginBlock(settings{
 		BaseURL: "https://api.mistral.ai/v1", LogRetention: 200, IgnoreProxy: true,
 		Failover: true, CooldownSeconds: 60,
-	})
+	}, 4)
 	if !strings.Contains(block, "ignore-proxy: true") {
 		t.Fatalf("block missing ignore-proxy:\n%s", block)
 	}
@@ -141,7 +146,7 @@ func TestParseRenderedPluginBlockRoundTripsKeys(t *testing.T) {
 		},
 		Models: []modelAlias{{Client: "m", Upstream: "upstream-m"}},
 	}
-	block := renderPluginBlock(original)
+	block := renderPluginBlock(original, 4)
 	got := parseSettings([]byte(block))
 	if len(got.Credentials) != 2 {
 		t.Fatalf("credentials = %#v\nblock:\n%s", got.Credentials, block)

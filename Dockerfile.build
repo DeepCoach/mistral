@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
 
 COPY go.mod ./
 COPY cmd ./cmd
+COPY internal ./internal
 
 ENV CGO_ENABLED=1 GOOS=linux GOARCH=amd64
 RUN mkdir /out && go build -trimpath -buildvcs=false -buildmode=c-shared \

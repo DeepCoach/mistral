@@ -3,5 +3,5 @@
 *.dylib
 *.dll
 dist/
-AGENTS.md
+.zcode_tmp/
 /mistral

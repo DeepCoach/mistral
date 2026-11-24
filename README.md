@@ -74,8 +74,9 @@ plugins:
       priority: 100
       base-url: "https://api.mistral.ai/v1"
       console-url: "https://console.mistral.ai"
+      # config-path: "/CLIProxyAPI/config.yaml"
       log-retention: 200
-      stream-idle-seconds: 0
+      stream-idle-seconds: 300
       failover: true
       ignore-proxy: false
       cooldown-seconds: 60
@@ -105,8 +106,9 @@ plugins:
 | --- | --- |
 | `base-url` | Mistral API base URL, including `/v1`. Defaults to `https://api.mistral.ai/v1`. |
 | `console-url` | Console origin used to read the key scope from `/api/vibe/whoami`. Defaults to `https://console.mistral.ai`. Empty disables scope detection, so nothing is paused automatically. |
+| `config-path` | CPA `config.yaml` the console saves into. Empty means auto-detect; see [Config file path](#config-file-path). An explicit path must already exist. |
 | `log-retention` | Number of request log entries to keep, from 10 to 5000. |
-| `stream-idle-seconds` | Stream idle cutoff. 0 disables it. Above 0, an upstream request is cancelled after this many seconds without new bytes. |
+| `stream-idle-seconds` | Stream idle cutoff. Defaults to 300. 0 disables it; above 0, an upstream request is cancelled after this many seconds without new bytes. |
 | `failover` | When enabled, a failed upstream attempt moves to the next credential by priority. When disabled, only the first credential in the current order is used. |
 | `ignore-proxy` | When enabled, the plugin connects to Mistral directly and bypasses CPA's global proxy. Off by default. |
 | `cooldown-seconds` | Base cooldown after a failure, from 0 to 3600. 0 disables cooldown, but failover still moves through the list. |
@@ -117,6 +119,18 @@ plugins:
 | `models[].id` | Model name exposed to clients. |
 | `models[].upstream-id` | Model ID sent to Mistral. |
 | `models[].reasoning` | Empty passes through the client's `reasoning_effort`. A value such as `low`, `medium`, `high`, `xhigh`, or `max` forces an override. |
+
+### Config file path
+
+Saving in the console rewrites the whole `plugins.configs.mistral` block in CPA's `config.yaml`. The plugin resolves that file in this order:
+
+1. `config-path` under `plugins.configs.mistral`, when set.
+2. The `CPA_MISTRAL_CONFIG_PATH` environment variable.
+3. `/CLIProxyAPI/config.yaml`.
+4. `config.yaml` in the directory of the running CPA executable.
+5. `config.yaml` in the process working directory.
+
+An explicit `config-path` or `CPA_MISTRAL_CONFIG_PATH` that points at a missing file is an error; the plugin does not create a config file. When no candidate exists, saving fails and reports the paths it tried. A set `config-path` is written back into the block, so later saves keep using the same file.
 
 ## Calling a model
 
@@ -215,7 +229,7 @@ The Logs tab shows the latest 50, 100, or 200 entries, filters by status, and li
 
 When `stream-idle-seconds` is above 0, the plugin opens a cancellable upstream operation and checks the time of the last received byte every second. If the threshold passes with no new bytes, it cancels the upstream request and closes the downstream stream.
 
-The first packet for the `max` setting often takes more than 20 seconds. Do not set this value too low. 0 disables the cutoff, which is the default.
+The first packet for the `max` setting often takes more than 20 seconds. Do not set this value too low. The default is 300 seconds; 0 disables the cutoff.
 
 ## Build from source
 
@@ -229,9 +243,9 @@ The result is `dist/mistral.so`. Other platforms are built by the [release workf
 
 ## Release
 
-The version in `marketplace/registry.json` under `plugins[0].version` is authoritative, and it must equal `pluginVersion` in `cmd/mistral/version.go`.
+The version is the `pluginVersion` constant in `internal/plugin/register.go`; that constant is the single source of truth. `marketplace/registry.json` must carry the same `plugins[0].version`, and CI compares the two.
 
-Push a tag named `v` plus that version, for example `v0.3.0`. Actions will:
+Push a tag named `v` plus that version, for example `v0.5.1`. Actions will:
 
 1. Run tests and build the shared library on each platform.
 2. Package linux amd64, linux arm64, darwin arm64, darwin amd64, and windows amd64.
